@@ -100,12 +100,10 @@ For keyboard-heavy apps, prefer data-driven dispatch over ds.clj string builders
 
 This is safer than assembling JS strings — errors surface at compile/test time, not in the browser console. Use ds.clj's `post-action*` for simple onclick handlers; use the server keymap pattern for keyboard shortcuts.
 
-## Projects Using This Kit
-
-- `joe-payne-app` (ESR Dashboard) — member management, Datastar SDK
-- `mothership` — IDE, raw SSE, full keyboard dispatch
-- `social-media-writer` — content creation, raw SSE
-
 ## Provenance
 
-Superset extracted from mothership (34 helpers), social-media-writer (33), and ESR dashboard. Battle-tested across 3+ production apps since 2025.
+These helpers are a superset extracted and de-duplicated from several
+production Clojure + Datastar + http-kit web apps, battle-tested since 2025.
+The SSE reliability rules (`sse.clj` / `sse_sdk.clj`) and the expression
+footgun fixes (`ds.clj`) each came from a real outage or a silent-failure
+debugging session — the comments call out which.

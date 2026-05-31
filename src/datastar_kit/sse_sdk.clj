@@ -5,10 +5,9 @@
    (org.httpkit as-channel + ds/sse-event strings). THIS namespace is for apps
    that use the Datastar SDK adapter — i.e. `hk/->sse-response` giving you a
    `sse-gen`, and `d*/patch-elements!` / `d*/patch-signals!` to write to it.
-   (joe-payne-app/esr-dashboard, social-media-writer, reddit-scraper-fulcro.)
 
    The three reliability rules that make a long-lived stream BORING instead of
-   dangerous (learned the hard way in marvin-voice-remote, 2026-05-30):
+   dangerous (each learned the hard way in production):
 
      1. HEARTBEAT — a tiny signals patch every ~15s so an idle proxy / LB / Cloud
         Run timeout can't silently reap the stream (frozen display, no error).
@@ -18,8 +17,8 @@
      2. OFF-THREAD PUSH — broadcasts run on a single agent thread, NEVER on the
         request/handler thread. A slow or half-dead client therefore can't block a
         POST handler and starve http-kit's (small, default 4) worker pool → 503s
-        on UNRELATED requests. This is the piece the SDK reference apps historically
-        lacked — they fan out synchronously in the handler (see esr-dashboard#16).
+        on UNRELATED requests. This is the piece SDK-based apps most often miss —
+        they fan out synchronously in the handler.
 
      3. SUBSCRIBER SET + REAPING — one shared set of sse-gens (not one watch per
         connection, which leaks); any whose write fails is reaped, so dead

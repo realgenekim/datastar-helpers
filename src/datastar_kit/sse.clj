@@ -2,7 +2,7 @@
   "Reliable SSE broadcast for http-kit + Datastar.
 
    The three things that make a long-lived SSE stream BORING instead of dangerous
-   (learned the hard way in marvin-voice-remote — see its docs/sse-datastar-design.md):
+   (each learned the hard way in production):
 
      1. HEARTBEAT  — a comment line every ~15s so idle proxy/Cloud-Run timeouts
                      can't silently reap the stream (frozen display with no error).

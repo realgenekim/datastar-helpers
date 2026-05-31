@@ -300,7 +300,7 @@
 ;; These are the ONLY functions that should produce SSE event strings.
 ;; Projects using the Datastar Clojure SDK (starfederation.datastar.clojure.api)
 ;; don't need these — the SDK handles formatting. These are for projects
-;; that write raw SSE (e.g., mothership, social-media-writer).
+;; that write raw SSE event strings by hand.
 ;;
 ;; Aliased build (v1.0.0-RC.8) renamed from original SDK:
 ;;   merge-fragments → patch-elements
