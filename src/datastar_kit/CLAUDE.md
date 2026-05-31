@@ -7,7 +7,10 @@ Portable, project-agnostic helpers for Clojure + Datastar + SSE applications.
 | File | Purpose |
 |------|---------|
 | `ds.clj` | Generates safe JS expressions for Hiccup `data-star-*` attributes |
+| `sse.clj` | Reliable SSE broadcast, raw-channel flavor (`ds/sse-event` strings): off-thread push, heartbeat, reaping |
+| `sse_sdk.clj` | Same reliability, **SDK flavor** (`hk/->sse-response` + `patch-elements!`): `push!`/`push-signals!`, `sse-response` with `on-connect` |
 | `resources/public/js/datastar-kit.js` | Runtime JS: `postJSON()`, `showNotification()` |
+| `resources/public/js/datastar-auth-fix.js` | HTTP Basic Auth fix: makes `fetch()`-based `@get`/`@post` work behind credentialed URLs; load BEFORE the Datastar module |
 | `resources/public/vendor/datastar-aliased.js` | Vendored Datastar (CDN returns 404) |
 
 ## Architecture: Server is the Game Loop
