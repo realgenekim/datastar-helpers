@@ -27,6 +27,14 @@
 
 (def ^:dynamic *heartbeat-ms* 15000)
 
+(def ^:dynamic *flap-threshold*
+  "A single dashboard should hold a handful of SSE connections, not dozens. When the
+   live subscriber set exceeds this, `sse-handler` logs a loud WARN — a spike means a
+   RECONNECT STORM: a page reload / setInterval / meta-refresh fighting the stream.
+   This is the #1 *silent* Datastar failure; the detector makes it loud so you don't
+   chase it for an hour (learned the hard way, sync-zoom-slack 2026-06-17)."
+  12)
+
 (defn subscriber-count [] (count @subscribers))
 
 (defn- broadcast!*
@@ -84,7 +92,14 @@
                   (http/send! ch (initial-fn) false)   ; initial state to THIS client
                   (swap! subscribers conj ch)
                   (start-heartbeat! ch)
-                  (log/info ::connected :subscribers (count @subscribers)))
+                  (let [n (count @subscribers)]
+                    (log/info ::connected :subscribers n)
+                    (when (> n *flap-threshold*)
+                      ;; FLAP DETECTOR — the silent storm made loud
+                      (log/warn ::possible-flap :subscribers n
+                                :hint (str "SSE reconnect storm (" n " live connections). A page reload / "
+                                           "setInterval / meta-refresh is likely fighting the stream. "
+                                           "Grep src for: location.reload, setInterval, http-equiv refresh.")))))
       :on-close (fn [ch status]
                   (swap! subscribers disj ch)
                   (log/info ::disconnected :status status :subscribers (count @subscribers)))})))
