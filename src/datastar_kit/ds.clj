@@ -11,6 +11,7 @@
    - Payload & values: JsExpr, js, js-val, js-payload, $value, $checked, $key, $text
    - Server actions: post-action*, click-action, fetch-then-reload, fetch-swap
    - Binding: bind (prevents the true vs \"\" Datastar bug)
+   - URL: replace-url (server-owned location bar via the replaceUrl plugin)
    - Clipboard: copy-nearest-text, copy-text, copy-text-js
    - Focus/scroll: js-focus-element, js-scroll-into-view
    - SSE event constructors: sse-event, sse-fragment, sse-inner, sse-raw
@@ -209,6 +210,21 @@
    => postJSON('/api/chat',{'message':m.value.trim()}).catch(e=>console.error(e))"
   [url payload-map]
   (str "postJSON('" url "',{" (js-payload payload-map) "}).catch(e=>console.error(e))"))
+
+(defn replace-url
+  "Hiccup attribute map for data-star-replace-url (Datastar's replaceUrl plugin).
+   On load/morph Datastar evaluates the value as a JS expression and
+   history.replaceState's the result — so the SERVER owns the location bar: stamp
+   this on a (morphed) element and the URL follows server state with NO client-side
+   observer or DOM glue.
+
+   A string is auto-quoted as a JS string literal; pass (ds/js \"...\") for a raw
+   expression that references signals/JS (e.g. (ds/js \"'/p?s='+$sid\")).
+   Requires the replaceUrl plugin in your Datastar build.
+     (merge attrs (ds/replace-url \"/stories/for-you?s=abc\"))
+     => {:data-star-replace-url \"'/stories/for-you?s=abc'\"}"
+  [url-or-expr]
+  {:data-star-replace-url (js-val url-or-expr)})
 
 ;; ---------------------------------------------------------------------------
 ;; Block-scoped click action — prevents `const`/`let` collisions in Datastar
