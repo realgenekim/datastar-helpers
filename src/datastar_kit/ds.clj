@@ -341,9 +341,21 @@
 (s/def ::fragments (s/coll-of ::fragment :min-count 1))
 (s/def ::sse-event (s/keys :req-un [::fragments] :opt-un [::mode]))
 
+(defn- data-lines
+  "Render an SSE data payload as one-or-more `data:` lines. The browser rejoins multiple
+   `data:` lines with \\n, so newlines embedded in HTML survive LOSSLESSLY. A single
+   `data: <html-with-a-newline>` would otherwise be TRUNCATED at the first newline on the
+   wire (a silent footgun — page-load HTML looks fine, only the live push cuts off). Use
+   this for any data field that may carry HTML."
+  [payload]
+  (->> (str/split (str payload) #"\n" -1)
+       (map #(str "data: " %))
+       (str/join "\n")))
+
 (defn sse-event
   "Build a Datastar SSE event string from a spec'd data map.
    Wrong structure fails fast (spec precondition), not silently on the wire.
+   Newlines in fragment HTML are preserved via multi-line `data:` continuation.
 
    Input: {:fragments [{:id \"foo\" :html \"<b>x</b>\"}] :mode :inner}
    Output: \"event: datastar-patch-elements\\ndata: mode inner\\ndata: elements ...\""
@@ -353,7 +365,7 @@
        (when mode (str "data: mode " (name mode) "\n"))
        (str/join "\n"
                  (for [{:keys [id html]} fragments]
-                   (str "data: " sse-data-field " <div id=\"" id "\">" html "</div>")))
+                   (data-lines (str sse-data-field " <div id=\"" id "\">" html "</div>"))))
        "\n\n"))
 
 (defn sse-fragment
@@ -373,7 +385,7 @@
   (str "event: " sse-event-type "\n"
        "data: selector " selector "\n"
        "data: mode inner\n"
-       "data: " sse-data-field " " html
+       (data-lines (str sse-data-field " " html))
        "\n\n"))
 
 (defn sse-raw
@@ -384,5 +396,5 @@
   {:pre [(string? html-str)
          (re-find #"id=\"[^\"]+\"" html-str)]}
   (str "event: " sse-event-type "\n"
-       "data: " sse-data-field " " html-str
+       (data-lines (str sse-data-field " " html-str))
        "\n\n"))
