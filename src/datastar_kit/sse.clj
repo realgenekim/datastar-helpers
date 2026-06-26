@@ -1,7 +1,7 @@
 (ns datastar-kit.sse
   "Reliable SSE broadcast for http-kit + Datastar.
 
-   The three things that make a long-lived SSE stream BORING instead of dangerous
+   The four things that make a long-lived SSE stream BORING instead of dangerous
    (each learned the hard way in production):
 
      1. HEARTBEAT  — a comment line every ~15s so idle proxy/Cloud-Run timeouts
@@ -13,6 +13,13 @@
      3. SUBSCRIBER SET + REAPING — one shared set of channels (not one watch per
                      connection, which leaks); any channel whose write fails is
                      reaped, so dead connections can't accumulate.
+     4. BOUNDED RECYCLE (opt-in, `*max-stream-ms*`) — heartbeat reaping only catches
+                     a client whose write FAILS; a half-open socket (mobile/Cloud Run)
+                     can swallow writes without erroring, so the ghost lingers until the
+                     PLATFORM timeout. A long platform timeout then lets ghosts pile up
+                     to the concurrency limit → HTTP 429 `Rate exceeded.` for up to an
+                     hour. Setting `*max-stream-ms*` caps stream lifetime so the server
+                     recycles streams on its own terms and ghosts can't accumulate.
 
    Safe because every push sends the FULL current fragment (idempotent, not deltas):
    a dropped+reconnected stream just re-paints the truth. The stream is disposable;
@@ -34,6 +41,28 @@
    This is the #1 *silent* Datastar failure; the detector makes it loud so you don't
    chase it for an hour (learned the hard way, sync-zoom-slack 2026-06-17)."
   12)
+
+(def ^:dynamic *max-stream-ms*
+  "Optional HARD CAP on how long a single SSE stream stays open server-side. nil =
+   unbounded (legacy behavior — unchanged). When set (e.g. 240000 = 4 min), the server
+   deliberately CLOSES each stream after this long; a reconnect-capable client just
+   re-opens it and re-paints the full truth, so the recycle is invisible.
+
+   WHY THIS EXISTS — half-open sockets. Heartbeat reaping only catches a dead client
+   when the write FAILS. On a mobile/proxied connection (Cloud Run especially) a write
+   can succeed into a buffer of a TCP connection the client already abandoned, so the
+   heartbeat never errors and the ghost lingers until the PLATFORM request timeout. With
+   a long timeout (e.g. Cloud Run --timeout 3600) ghosts pile up to the instance's
+   concurrency limit and the whole service starts shedding load with HTTP 429
+   `Rate exceeded.` — for up to an hour. (Lived it: marvin-voice-remote 2026-06-26.)
+   A bounded max-age guarantees no connection outlives this cap regardless of the
+   platform timeout, so ghosts can't accumulate.
+
+   SAFE TO ENABLE ONLY IF your client reconnects (Datastar re-subscribes / EventSource)
+   OR you have a short poll fallback. Without reconnect, live updates simply STOP after
+   the cap until the user reloads. On Cloud Run, set this BELOW your --timeout (e.g. cap
+   240s under a 300s timeout) so streams recycle on YOUR terms, not the platform's."
+  nil)
 
 (defn subscriber-count [] (count @subscribers))
 
@@ -60,14 +89,27 @@
   (send-off push-agent (fn [_] (broadcast!* render-fn) nil)))
 
 (defn- start-heartbeat! [ch]
-  (future
-    (loop []
-      (Thread/sleep *heartbeat-ms*)
-      (when (contains? @subscribers ch)
-        (if (try (http/send! ch ": heartbeat\n\n" false) (catch Exception _ false))
-          (recur)
-          (do (swap! subscribers disj ch)
-              (log/info ::heartbeat-reaped :remaining (count @subscribers))))))))
+  ;; Snapshot the max-age deadline at CONNECT time (binds the dynamic var per stream).
+  (let [deadline (when *max-stream-ms* (+ (System/currentTimeMillis) (long *max-stream-ms*)))]
+    (future
+      (loop []
+        (Thread/sleep *heartbeat-ms*)
+        (cond
+          (not (contains? @subscribers ch)) nil          ; already closed/reaped
+          ;; Bounded recycle: deliberately close the stream so it can't outlive the cap
+          ;; (and so the platform timeout never gets the chance to hoard it). A
+          ;; reconnect-capable client re-opens and re-paints the full state.
+          (and deadline (>= (System/currentTimeMillis) deadline))
+          (do (try (http/send! ch ": recycle\n\n" false) (catch Exception _ nil))
+              (try (http/close ch) (catch Exception _ nil))
+              (swap! subscribers disj ch)
+              (log/info ::max-age-recycled :remaining (count @subscribers)))
+          ;; Normal heartbeat: a failed write reaps a (detectably) dead channel.
+          :else
+          (if (try (http/send! ch ": heartbeat\n\n" false) (catch Exception _ false))
+            (recur)
+            (do (swap! subscribers disj ch)
+                (log/info ::heartbeat-reaped :remaining (count @subscribers)))))))))
 
 (defn sse-handler
   "Build an http-kit ring handler for an SSE endpoint. `initial-fn` is a 0-arg fn
