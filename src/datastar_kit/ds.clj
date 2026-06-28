@@ -287,6 +287,31 @@
     (str "navigator.clipboard.writeText(" js-expr ")"
          ".then(()=>showNotification('" (str/replace notify "'" "\\'") "'))")))
 
+(defn set-select
+  "JS (for execute-script!) that sets a <select>'s value server-authoritatively, so a
+   server-driven change (an SSE morph, keyboard nav, etc.) is reflected in the VISIBLE
+   control — the missing half when the server, not a user click, picks the value.
+
+   Crucially handles a **Fomantic-UI dropdown** initialized over the select: setting the
+   native `.value` does NOT update Fomantic's rendered widget, so we drive it through its
+   API with the change-trigger SUPPRESSED (so it won't re-fire a data-star-on:change @get
+   loop). Falls back to the native element when no widget is attached.
+
+     el-id    — the <select> element id
+     value-js — a JS expression for the value (e.g. \"'asian'\", a $signal, or a pr-str'd
+                string literal like (pr-str \"asian\") => \\\"asian\\\")
+
+   (set-select \"mq-lane\" (pr-str lane))   ;; inside (d*/execute-script! sse-gen ...)"
+  [el-id value-js]
+  (str "(function(){var el=document.getElementById('" el-id "');if(!el)return;"
+       "var v=" value-js ",$=window.jQuery,"
+       ;; Fomantic wraps <select> in a parent .ui.dropdown div and hides the select; the
+       ;; module + visible .menu/.text live on the WRAPPER, not the select. Drive the wrapper.
+       "$dd=($&&$.fn&&$.fn.dropdown)?$(el).closest('.ui.dropdown'):null;"
+       "if($dd&&$dd.length&&$dd.find('.menu').length){"
+       "$dd.dropdown('set selected',v,false,true);}"            ; (values, $item, preventChangeTrigger, keepSearchTerm)
+       "else{el.value=v;}})()"))
+
 ;; ---------------------------------------------------------------------------
 ;; IDE-safe reload — works in both standalone and IDE mode
 ;; ---------------------------------------------------------------------------
