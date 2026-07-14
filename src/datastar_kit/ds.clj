@@ -11,6 +11,7 @@
    - Payload & values: JsExpr, js, js-val, js-payload, $value, $checked, $key, $text
    - Server actions: post-action*, click-action, fetch-then-reload, fetch-swap
    - Binding: bind (prevents the true vs \"\" Datastar bug)
+   - Browser ownership: browser-owned (ordinary SSE morphs cannot repaint value)
    - URL: replace-url (server-owned location bar via the replaceUrl plugin)
    - Clipboard: copy-nearest-text, copy-text, copy-text-js
    - Focus/scroll: js-focus-element, js-scroll-into-view
@@ -148,6 +149,23 @@
    Usage: (merge {:id \"chat-input\"} (ds/bind :chat-msg))"
   [signal-name]
   {(keyword (str "data-star-bind:" (name signal-name))) ""})
+
+(defn browser-owned
+  "Mark a stable-ID form control as browser-owned across ordinary Datastar
+   morphs. Datastar leaves the existing element untouched when both the old and
+   incoming element carry data-star-ignore-morph.
+
+   Use this for textareas whose live value, undo stack, and cursor belong to the
+   browser. Server-authorized identity changes or accepted operations must
+   repaint through an explicit fenced command; an incidental SSE frame must not.
+
+   This protects morphs, not page teardown. Pair it with createTextJournal from
+   datastar-kit.js when reload or crash recovery matters.
+
+   Usage: (merge {:id \"editor\"} (ds/browser-owned))"
+  []
+  {:data-star-ignore-morph ""
+   :data-ds-browser-owned ""})
 
 ;; ---------------------------------------------------------------------------
 ;; Raw JS expressions — tagged type for safe payload generation

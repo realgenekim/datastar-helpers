@@ -9,7 +9,7 @@ Portable, project-agnostic helpers for Clojure + Datastar + SSE applications.
 | `ds.clj` | Generates safe JS expressions for Hiccup `data-star-*` attributes |
 | `sse.clj` | Reliable SSE broadcast, raw-channel flavor (`ds/sse-event` strings): off-thread push, heartbeat, reaping |
 | `sse_sdk.clj` | Same reliability, **SDK flavor** (`hk/->sse-response` + `patch-elements!`): `push!`/`push-signals!`, `sse-response` with `on-connect` |
-| `resources/public/js/datastar-kit.js` | Runtime JS: `postJSON()`, `showNotification()` |
+| `resources/public/js/datastar-kit.js` | Runtime JS: `postJSON()`, notifications, exact-byte text journal |
 | `resources/public/js/datastar-auth-fix.js` | HTTP Basic Auth fix: makes `fetch()`-based `@get`/`@post` work behind credentialed URLs; load BEFORE the Datastar module |
 | `resources/public/vendor/datastar-aliased.js` | Vendored Datastar (CDN returns 404) |
 
@@ -64,6 +64,11 @@ Client fires POST and forgets. Zero JSON parsing. Zero client rendering.
    ```
 
 4. **NEVER use `data-star-on:click` on 10+ repeated elements** — Datastar recompiles every expression on SSE morph. Use plain `onclick` with `fetch()` for repeated elements.
+
+5. **NEVER let an incidental morph own a live editor value.** Merge
+   `(ds/browser-owned)` into stable-ID text controls and use
+   `createTextJournal` when reload/crash recovery matters. A server-authorized
+   repaint must be an explicit identity/revision-fenced operation.
 
 ## SSE Toast Pattern
 
