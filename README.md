@@ -27,7 +27,7 @@ The server owns all state. The DOM is a display terminal. The client fires a POS
 | `src/datastar_kit/sse.clj` | `datastar-kit.sse` | **Reliable SSE broadcast (raw-channel flavor)** for apps that write raw SSE strings: subscriber set, off-thread push agent, heartbeat, dead-connection reaping. |
 | `src/datastar_kit/sse_sdk.clj` | `datastar-kit.sse-sdk` | **Same reliability, SDK flavor** — for apps using the Datastar Clojure SDK (`hk/->sse-response` + a `sse-gen` + `patch-elements!`): off-thread `push!`/`push-signals!`, idempotent heartbeat, reaping, and an `sse-response` helper with an `on-connect` hook. |
 | `resources/public/vendor/datastar-aliased.js` | — | The vendored Datastar client (use this, not a CDN). |
-| `resources/public/js/datastar-kit.js` | — | Client runtime: `postJSON`, notifications, and exact-byte text journals. |
+| `resources/public/js/datastar-kit.js` | — | Small client runtime: `postJSON`, `showNotification`. |
 | `resources/public/js/datastar-auth-fix.js` | — | **HTTP Basic Auth fix** — makes `fetch()`-based `@get`/`@post` work behind credentialed URLs. See below. |
 
 The consumer provides `org.httpkit`, `taoensso.timbre`, and (for the SDK flavor) `dev.data-star.clojure/http-kit`; they're intentionally not pinned here so versions don't fight.
@@ -50,38 +50,6 @@ These are the things you'll otherwise rediscover the hard way. The library exist
   <script type="module" src="/vendor/datastar-aliased.js"></script>
   ```
 - **Match selection state to the workflow.** Server-authoritative selection (toggle → SSE morph) is great for single highlights; for *multi-select-then-batch-act*, a client-side `Set` is the right tool (0 ms local toggles vs a round-trip per click). Server-authoritative ≠ always better.
-- **Browser-owned text needs two fences.** `(ds/browser-owned)` prevents an ordinary SSE morph from repainting a stable-ID input or textarea. `createTextJournal` synchronously records each visible input so reload or crash recovery does not depend on an asynchronous debounce or `beforeunload`. Clear a record only with an exact sequence/hash acknowledgement.
-
-### Browser-owned editor example
-
-```clojure
-[:textarea#editor
- (merge {:data-star-on:input "onEditorInput()"}
-        (ds/browser-owned))
- text]
-```
-
-```javascript
-const journal = createTextJournal({
-  element: '#editor',
-  identity: () => ({
-    documentId: currentDocumentId(),
-    revision: currentRevision(),
-    editorKey: currentEditorKey()
-  })
-});
-
-installTextJournalReloadGuard(journal, async record => {
-  const response = await postJSON('/api/editor/settle', record);
-  if (!response.ok) throw new Error(`settlement failed: ${response.status}`);
-  return response.json(); // {sequence, hash, token, documentId, revision}
-});
-```
-
-The journal is deliberately application-neutral. Document leases, revision
-semantics, conflict presentation, and durable storage acknowledgements remain
-the consuming application's responsibility. `listTextJournals(...)` discovers
-records left by earlier tab instances after a crash or closed-tab recovery.
 
 ## How to consume it — dev vs CI
 

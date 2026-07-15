@@ -61,8 +61,3 @@
         data-count (count (filter #(str/starts-with? % "data:") (str/split-lines ev)))]
     ;; selector + mode + elements = exactly 3 data: lines, no extra continuation
     (is (= 3 data-count))))
-
-(deftest browser-owned-controls-ignore-ordinary-morphs
-  (is (= {:data-star-ignore-morph ""
-          :data-ds-browser-owned ""}
-         (ds/browser-owned))))
