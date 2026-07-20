@@ -26,6 +26,7 @@ The server owns all state. The DOM is a display terminal. The client fires a POS
 | `src/datastar_kit/ds.clj` | `datastar-kit.ds` | Signal helpers (`signal-inc/dec/set/clamp`), keydown builders (`on-key/on-meta/on-alt/keydown-expr`), `bind`, `post-action*`, `$value/$checked/…`, clipboard/scroll helpers, and **spec-validated SSE event constructors** (`sse-event`, `sse-fragment`, `sse-raw`). |
 | `src/datastar_kit/sse.clj` | `datastar-kit.sse` | **Reliable SSE broadcast (raw-channel flavor)** for apps that write raw SSE strings: subscriber set, off-thread push agent, heartbeat, dead-connection reaping. |
 | `src/datastar_kit/sse_sdk.clj` | `datastar-kit.sse-sdk` | **Same reliability, SDK flavor** — for apps using the Datastar Clojure SDK (`hk/->sse-response` + a `sse-gen` + `patch-elements!`): off-thread `push!`/`push-signals!`, idempotent heartbeat, reaping, and an `sse-response` helper with an `on-connect` hook. |
+| `src/datastar_kit/assets.clj` | `datastar-kit.assets` | Ordered Hiccup script tags with app-supplied cache-busting; guarantees the Basic-Auth bootstrap loads before Datastar. |
 | `resources/public/vendor/datastar-aliased.js` | — | The vendored Datastar client (use this, not a CDN). |
 | `resources/public/js/datastar-kit.js` | — | Small client runtime: `postJSON`, `showNotification`. |
 | `resources/public/js/datastar-auth-fix.js` | — | **HTTP Basic Auth fix** — makes `fetch()`-based `@get`/`@post` work behind credentialed URLs. See below. |
@@ -44,11 +45,14 @@ These are the things you'll otherwise rediscover the hard way. The library exist
   1. **Heartbeat** — or an idle proxy / LB / Cloud Run silently reaps the stream and the display freezes with no error.
   2. **Off-thread push** — fan out broadcasts on an agent thread, never the request thread, or one slow client starves http-kit's worker pool and *unrelated* POSTs start returning 503. (This is the rule SDK apps most often miss.)
   3. **Subscriber set + reap-on-failed-write** — one shared set, not one watch per connection (which leaks). Every push sends the full fragment (idempotent), so a dropped+reconnected client just re-paints.
-- **`fetch()` refuses credentialed URLs, so Datastar breaks behind HTTP Basic Auth.** Opening a page as `https://user:pass@host/…` makes `new Request(url)` throw *before* `fetch` runs (so wrapping `fetch` alone is too late). `datastar-auth-fix.js` patches both `window.Request` (via Proxy) and `fetch`, stripping credentials from the URL; it's a no-op unless the URL has `user:pass@`. HTMX never hit this (it uses XHR). Load it **before** the Datastar module:
+- **`fetch()` refuses credentialed URLs, so Datastar breaks behind HTTP Basic Auth.** Opening a page as `https://user:pass@host/…` makes `new Request(url)` throw *before* `fetch` runs (so wrapping `fetch` alone is too late). `datastar-auth-fix.js` idempotently patches both `window.Request` (via Proxy) and `fetch`; its URL sanitizer is a no-op unless a request URL has `user:pass@`. HTMX never hit this (it uses XHR). Load it **before** the Datastar module:
   ```html
   <script src="/js/datastar-auth-fix.js"></script>
   <script type="module" src="/vendor/datastar-aliased.js"></script>
   ```
+  Clojure consumers should prefer `(datastar-kit.assets/script-tags
+  {:asset-url views/static :basic-auth? true})` so ordering and cache-busting are
+  not reimplemented in every view.
 - **Match selection state to the workflow.** Server-authoritative selection (toggle → SSE morph) is great for single highlights; for *multi-select-then-batch-act*, a client-side `Set` is the right tool (0 ms local toggles vs a round-trip per click). Server-authoritative ≠ always better.
 
 ## How to consume it — dev vs CI

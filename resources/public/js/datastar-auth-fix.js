@@ -41,6 +41,14 @@
 (function () {
   'use strict';
 
+  // Loading this bootstrap twice must not wrap Request/fetch twice. Expose the
+  // installed version so production diagnostics can prove that the bootstrap
+  // ran before Datastar initialized.
+  if (window.__datastarAuthFixVersion) {
+    return;
+  }
+  window.__datastarAuthFixVersion = '2';
+
   // Strip username:password from a URL string, resolving relative URLs against
   // the current document. Returns the cleaned string, or the original on parse
   // failure (e.g. opaque inputs we shouldn't touch).
@@ -58,15 +66,12 @@
     return urlString;
   }
 
-  // Only patch when the page actually carries credentials. In the normal case
-  // (browser auth dialog, no creds in URL) fetch works fine and we stay out of
-  // the way entirely.
-  var pageHasCreds = window.location.href.indexOf('@') !== -1;
-  if (!pageHasCreds) {
-    return;
-  }
-
-  console.log('[Datastar Auth Fix] Basic Auth credentials in URL detected; patching Request + fetch');
+  // Install unconditionally. Some browsers redact URL userinfo from
+  // window.location.href even though relative Request/fetch resolution still
+  // inherits it from the document URL. stripCreds() is already a no-op for
+  // ordinary URLs, so an early "contains @" guard only creates a false-negative
+  // failure mode.
+  console.log('[Datastar Auth Fix] v2 installed; sanitizing credentialed Request/fetch URLs');
 
   // --- 1. Best-effort: scrub credentials from the visible URL ---------------
   // If history.replaceState is available (history-patch.js may have disabled it
