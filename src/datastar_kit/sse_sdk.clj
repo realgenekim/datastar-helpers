@@ -31,23 +31,45 @@
 
    The CONSUMER provides the SDK adapter (dev.data-star.clojure/http-kit) + timbre;
    they're intentionally not required-with-version here so versions don't fight."
-  (:require [starfederation.datastar.clojure.api :as d*]
-            [starfederation.datastar.clojure.adapter.http-kit :as hk]
-            [taoensso.timbre :as log]))
+  (:require
+   [starfederation.datastar.clojure.adapter.http-kit :as hk]
+   [starfederation.datastar.clojure.api :as d*]
+   [taoensso.timbre :as log]))
 
 (defonce subscribers (atom #{}))
+(defonce ^:private subscriber-targets (atom {}))
 (defonce ^:private push-agent (agent nil))
 (defonce ^:private heartbeat-timer (atom nil))
 
 (def ^:dynamic *heartbeat-ms* 15000)
 
-(defn subscriber-count [] (count @subscribers))
+(defn subscriber-count
+  "Count all subscribers, or only subscribers registered to `target-key`."
+  ([] (count @subscribers))
+  ([target-key]
+   (count (filter #(= target-key (get @subscriber-targets %)) @subscribers))))
+
+(defn- targeted-subscribers
+  [target-key]
+  (into #{} (filter #(= target-key (get @subscriber-targets %))) @subscribers))
+
+(defn- register!
+  [sse-gen target-key]
+  (swap! subscribers conj sse-gen)
+  (when (some? target-key)
+    (swap! subscriber-targets assoc sse-gen target-key)))
+
+(defn- unregister!
+  [sse-gen]
+  (swap! subscribers disj sse-gen)
+  (swap! subscriber-targets dissoc sse-gen))
 
 (defn- reap!
   "Drop sse-gens whose write failed."
   [dead]
   (when (seq dead)
     (swap! subscribers #(reduce disj % dead))
+    (swap! subscriber-targets #(apply dissoc % dead))
     (log/info ::reaped :n (count dead) :remaining (count @subscribers))))
 
 (defn- broadcast!*
@@ -58,6 +80,16 @@
                        (if (try (write-fn sub) true (catch Exception _ false))
                          d (conj d sub)))
                      #{} @subscribers)]
+    (reap! dead)))
+
+(defn- target!*
+  "Apply `write-fn` only to subscribers registered to `target-key`; reap failed
+   writes. Runs on the push agent thread."
+  [target-key write-fn]
+  (let [dead (reduce (fn [d sub]
+                       (if (try (write-fn sub) true (catch Exception _ false))
+                         d (conj d sub)))
+                     #{} (targeted-subscribers target-key))]
     (reap! dead)))
 
 ;; ---------------------------------------------------------------------------
@@ -83,6 +115,15 @@
   (let [patches (vec patches)]
     (send-off push-agent (fn [_] (broadcast!* #(apply-patches! % patches)) nil))))
 
+(defn push-to!
+  "Push one or more ELEMENT patches only to subscribers registered to `target-key`,
+   OFF-THREAD. Returns the push agent so tests/callers may `await` delivery."
+  [target-key patches]
+  {:pre [(some? target-key)]}
+  (let [patches (vec patches)]
+    (send-off push-agent
+              (fn [_] (target!* target-key #(apply-patches! % patches)) nil))))
+
 (defn push-1!
   "Convenience: broadcast a single element patch (defaults to pm-outer morph)."
   ([html]               (push! [{:html html}]))
@@ -94,6 +135,13 @@
   [signals-json]
   (send-off push-agent
             (fn [_] (broadcast!* #(d*/patch-signals! % signals-json)) nil)))
+
+(defn push-signals-to!
+  "Push a signals patch only to subscribers registered to `target-key`, off-thread."
+  [target-key signals-json]
+  {:pre [(some? target-key)]}
+  (send-off push-agent
+            (fn [_] (target!* target-key #(d*/patch-signals! % signals-json)) nil)))
 
 ;; ---------------------------------------------------------------------------
 ;; Heartbeat
@@ -128,20 +176,24 @@
    LONG-LIVED (never closed server-side) — state changes arrive via push!/
    push-signals! broadcasts.
 
-   `on-connect` (optional) is a 1-arg fn called with the sse-gen right after
-   registration; use it to send the current full state to the connecting client,
-   e.g. (doseq [t tiles] (d*/patch-elements! sse-gen ...))."
-  ([request] (sse-response request nil))
+   `target-key` (optional, via the 3-arity) groups this connection for `push-to!` /
+   `push-signals-to!`. `on-connect` is a 1-arg fn called with the sse-gen right
+   after registration; use it to send current full state to THIS client only."
+  ([request] (sse-response request nil nil))
   ([request on-connect]
+   (sse-response request nil on-connect))
+  ([request target-key on-connect]
    (hk/->sse-response
-    request
-    {hk/on-open  (fn [sse-gen]
-                   (swap! subscribers conj sse-gen)
-                   (start-heartbeat!)
-                   (when on-connect
-                     (try (on-connect sse-gen)
-                          (catch Exception e (log/error e ::on-connect-error))))
-                   (log/info ::connected :subscribers (count @subscribers)))
-     hk/on-close (fn [sse-gen _status]
-                   (swap! subscribers disj sse-gen)
-                   (log/info ::disconnected :subscribers (count @subscribers)))})))
+     request
+     {hk/on-open  (fn [sse-gen]
+                    (register! sse-gen target-key)
+                    (start-heartbeat!)
+                    (when on-connect
+                      (try (on-connect sse-gen)
+                           (catch Exception e (log/error e ::on-connect-error))))
+                    (log/info ::connected :target-key target-key
+                              :subscribers (count @subscribers)))
+      hk/on-close (fn [sse-gen _status]
+                    (unregister! sse-gen)
+                    (log/info ::disconnected :target-key target-key
+                              :subscribers (count @subscribers)))})))
