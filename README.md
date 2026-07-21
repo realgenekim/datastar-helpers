@@ -30,6 +30,33 @@ The server owns all state. The DOM is a display terminal. The client fires a POS
 | `resources/public/vendor/datastar-aliased.js` | — | The vendored Datastar client (use this, not a CDN). |
 | `resources/public/js/datastar-kit.js` | — | Small client runtime: `postJSON`, `showNotification`. |
 | `resources/public/js/datastar-auth-fix.js` | — | **HTTP Basic Auth fix** — makes `fetch()`-based `@get`/`@post` work behind credentialed URLs. See below. |
+| `resources/public/js/keyboard-chords.js` | — | Reusable two-key browser shortcut engine with shifted-key normalization, editable-field suppression, timeout, and lifecycle resets. |
+
+### Browser-owned keyboard chords
+
+Keep route and action maps in the consuming application; share only the state machine:
+
+```html
+<script src="/js/keyboard-chords.js"></script>
+<script src="/js/my-app-keyboard.js"></script>
+```
+
+```js
+const chords = DatastarKeyboardChords.create({
+  bindings: {
+    "g shift+s": () => { window.location.href = "/starred-infinite"; },
+    "s shift+r": () => sortBy("random")
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (chords.handle(event)) return;
+  // Application-owned single-key shortcuts continue here.
+});
+```
+
+The controller ignores the standalone `Shift` event browsers emit inside `g S`, suppresses shortcuts in editable
+elements, expires prefixes after one second, and resets on Escape, window blur, and document visibility changes.
 
 The consumer provides `org.httpkit`, `taoensso.timbre`, and (for the SDK flavor) `dev.data-star.clojure/http-kit`; they're intentionally not pinned here so versions don't fight.
 
