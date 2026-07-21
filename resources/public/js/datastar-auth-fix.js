@@ -47,19 +47,21 @@
   if (window.__datastarAuthFixVersion) {
     return;
   }
-  window.__datastarAuthFixVersion = '2';
+  window.__datastarAuthFixVersion = '3';
 
-  // Strip username:password from a URL string, resolving relative URLs against
-  // the current document. Returns the cleaned string, or the original on parse
-  // failure (e.g. opaque inputs we shouldn't touch).
+  // Resolve every parseable URL to an absolute string, then strip userinfo. The
+  // absolute conversion is essential even when location.href LOOKS clean: some
+  // browsers redact its userinfo while native fetch still resolves relative
+  // strings against the credentialed document URL and rejects them.
+  // Returns the original only on parse failure (opaque inputs we shouldn't touch).
   function stripCreds(urlString) {
     try {
       var u = new URL(urlString, window.location.href);
       if (u.username || u.password) {
         u.username = '';
         u.password = '';
-        return u.toString();
       }
+      return u.toString();
     } catch (e) {
       /* not a parseable URL -- leave untouched */
     }
@@ -69,9 +71,9 @@
   // Install unconditionally. Some browsers redact URL userinfo from
   // window.location.href even though relative Request/fetch resolution still
   // inherits it from the document URL. stripCreds() is already a no-op for
-  // ordinary URLs, so an early "contains @" guard only creates a false-negative
-  // failure mode.
-  console.log('[Datastar Auth Fix] v2 installed; sanitizing credentialed Request/fetch URLs');
+  // ordinary absolute URLs, so an early "contains @" guard only creates a
+  // false-negative failure mode.
+  console.log('[Datastar Auth Fix] v3 installed; resolving and sanitizing Request/fetch URLs');
 
   // --- 1. Best-effort: scrub credentials from the visible URL ---------------
   // If history.replaceState is available (history-patch.js may have disabled it
