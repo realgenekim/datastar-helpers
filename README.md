@@ -41,6 +41,9 @@ Keep route and action maps in the consuming application; share only the state ma
 <script src="/js/my-app-keyboard.js"></script>
 ```
 
+Clojure consumers should use `(datastar-kit.assets/keyboard-chords-script)`. It embeds the runtime during compilation,
+so it also works in thin-JAR/container builds that omit resource directories belonging to git dependencies.
+
 ```js
 const chords = DatastarKeyboardChords.create({
   bindings: {
