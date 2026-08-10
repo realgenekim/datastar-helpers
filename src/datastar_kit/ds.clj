@@ -264,11 +264,13 @@
    `ancestor-sel`, find `text-sel` inside it, copy textContent to clipboard, notify.
    Uses `evt.currentTarget` (the element with the data-star-on:click attribute).
    Requires showNotification() from datastar-kit.js."
-  [ancestor-sel text-sel]
-  (str "evt.stopPropagation();"
-       "navigator.clipboard.writeText("
-       "evt.currentTarget.closest('" ancestor-sel "').querySelector('" text-sel "').textContent"
-       ").then(()=>showNotification('Copied!'))"))
+  ([ancestor-sel text-sel]
+   (copy-nearest-text ancestor-sel text-sel "Copied!"))
+  ([ancestor-sel text-sel message]
+   (str "evt.stopPropagation();"
+        "navigator.clipboard.writeText("
+        "evt.currentTarget.closest('" ancestor-sel "').querySelector('" text-sel "').textContent"
+        ").then(()=>showNotification('" message "'))")))
 
 (defn copy-text
   "JS expression for onclick: copy a literal string to clipboard and notify.

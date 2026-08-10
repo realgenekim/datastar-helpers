@@ -79,3 +79,9 @@
          (ds/live-scrub :scrub "/fragment?at=" 75)))
   (is (thrown? AssertionError
                (ds/live-scrub :at-index "/fragment?at="))))
+
+(deftest copy-nearest-text-keeps-the-legacy-custom-message-arity
+  (is (str/includes? (ds/copy-nearest-text "dd" ".url")
+                     "showNotification('Copied!')"))
+  (is (str/includes? (ds/copy-nearest-text "dd" ".url" "Copied to clipboard")
+                     "showNotification('Copied to clipboard')")))
