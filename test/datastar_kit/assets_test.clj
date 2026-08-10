@@ -1,5 +1,6 @@
 (ns datastar-kit.assets-test
   (:require
+   [clojure.java.io :as io]
    [clojure.test :refer [deftest is testing]]
    [datastar-kit.assets :as assets]))
 
@@ -25,3 +26,8 @@
 (deftest script-tags-have-small-safe-default
   (is (= [[:script {:type "module" :src "/vendor/datastar-aliased.js"}]]
          (assets/script-tags {}))))
+
+(deftest vendored-datastar-does-not-open-sse-in-an-initially-hidden-tab
+  (let [bundle (slurp (io/resource "public/vendor/datastar-aliased.js"))]
+    (is (re-find #"openWhenHidden" bundle))
+    (is (re-find #"h\|\|!document\.hidden" bundle))))
