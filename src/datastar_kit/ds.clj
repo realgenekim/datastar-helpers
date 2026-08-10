@@ -30,8 +30,9 @@
    postJSON/showNotification implementations.
 
    See also: datastar-kit CLAUDE.md for full usage guide."
-  (:require [clojure.spec.alpha :as s]
-            [clojure.string :as str]))
+  (:require
+   [clojure.spec.alpha :as s]
+   [clojure.string :as str]))
 
 ;; ---------------------------------------------------------------------------
 ;; Signal arithmetic — prevents the $foo-1 camelCase parsing bug
@@ -334,6 +335,37 @@
    (fetch-swap \"/api/table\" \"my-table\")"
   [url target-id]
   (str "fetch('" url "').then(r=>r.text()).then(h=>{var el=document.getElementById('" target-id "');if(el)el.outerHTML=h})"))
+
+(defn sse-mount-url
+  "Attrs for an app-lifetime SSE stream. Hidden tabs release their connection;
+   visible tabs reconnect after failures and deliberate clean closes."
+  [url]
+  {:data-star-init
+   (str "@get('" url
+        "',{openWhenHidden:false,retry:'always',retryMaxCount:1000000})")})
+
+(defn sse-mount
+  "Organizer SSE mount for `event-id`, using the shared lifecycle policy."
+  [event-id]
+  (sse-mount-url (str "/api/sse?event-id=" event-id)))
+
+(defn live-scrub
+  "Attrs for a continuous control that patches a region through one-shot SSE.
+
+   Owns the binding and throttled input action together so callers cannot mix
+   in debounce or a legacy change/submit handler. Signal names must be a single
+   word because Datastar camelCases hyphens in expressions."
+  ([signal url-prefix]
+   (live-scrub signal url-prefix 150))
+  ([signal url-prefix throttle-ms]
+   (let [nm (name signal)]
+     (assert (not (str/includes? nm "-"))
+             (str "live-scrub signal must be a single word: " nm))
+     (assert (pos-int? throttle-ms)
+             (str "live-scrub throttle must be a positive integer: " throttle-ms))
+     {(keyword (str "data-star-bind:" nm)) ""
+      (keyword (str "data-star-on:input__throttle." throttle-ms "ms"))
+      (str "@get('" url-prefix "' + $" nm ")")})))
 
 ;; ---------------------------------------------------------------------------
 ;; SSE event constructors — data-oriented Datastar SSE formatting

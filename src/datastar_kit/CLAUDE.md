@@ -45,6 +45,12 @@ Client fires POST and forgets. Zero JSON parsing. Zero client rendering.
 ;; Bind (prevents the true attribute bug)
 (merge {:id "input"} (ds/bind :chat-msg))
 
+;; Persistent SSE: hidden tabs release the browser's connection pool
+(ds/sse-mount-url "/api/live/status")
+
+;; Continuous control: throttled one-shot SSE, never debounce/onchange
+(ds/live-scrub :atidx "/board/fragment?at-index=")
+
 ;; Clipboard (browser-native, user gesture required)
 (ds/copy-text "some-id")
 (ds/copy-nearest-text ".card" ".card-body")
@@ -65,6 +71,10 @@ Client fires POST and forgets. Zero JSON parsing. Zero client rendering.
    ```
 
 4. **NEVER use `data-star-on:click` on 10+ repeated elements** — Datastar recompiles every expression on SSE morph. Use plain `onclick` with `fetch()` for repeated elements.
+
+5. **NEVER hand-write a persistent mount** — use `sse-mount-url`; it explicitly closes hidden-tab streams and retries when visible.
+
+6. **NEVER hand-wire a continuous control** — use `live-scrub`; it owns the single-word signal and throttled one-shot SSE action. Do not merge debounce, `onchange`, or form-submit handlers onto it.
 
 ## SSE Toast Pattern
 

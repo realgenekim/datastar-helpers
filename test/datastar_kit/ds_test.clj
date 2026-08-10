@@ -1,9 +1,10 @@
 (ns datastar-kit.ds-test
   "Unit tests for the SSE event constructors — centered on the multi-line `data:`
    fix (PR #1): raw newlines in fragment HTML must NOT truncate on the wire."
-  (:require [clojure.test :refer [deftest is testing]]
-            [clojure.string :as str]
-            [datastar-kit.ds :as ds]))
+  (:require
+   [clojure.string :as str]
+   [clojure.test :refer [deftest is testing]]
+   [datastar-kit.ds :as ds]))
 
 (def ^:private data-lines #'ds/data-lines)   ; private helper under test
 
@@ -61,3 +62,20 @@
         data-count (count (filter #(str/starts-with? % "data:") (str/split-lines ev)))]
     ;; selector + mode + elements = exactly 3 data: lines, no extra continuation
     (is (= 3 data-count))))
+
+(deftest persistent-sse-mounts-own-the-browser-lifecycle
+  (is (= {:data-star-init
+          "@get('/events',{openWhenHidden:false,retry:'always',retryMaxCount:1000000})"}
+         (ds/sse-mount-url "/events"))))
+
+(deftest live-scrub-owns-continuous-one-shot-wiring
+  (is (= {:data-star-bind:atidx ""
+          :data-star-on:input__throttle.150ms
+          "@get('/fragment?at-index=' + $atidx)"}
+         (ds/live-scrub :atidx "/fragment?at-index=")))
+  (is (= {:data-star-bind:scrub ""
+          :data-star-on:input__throttle.75ms
+          "@get('/fragment?at=' + $scrub)"}
+         (ds/live-scrub :scrub "/fragment?at=" 75)))
+  (is (thrown? AssertionError
+               (ds/live-scrub :at-index "/fragment?at="))))
