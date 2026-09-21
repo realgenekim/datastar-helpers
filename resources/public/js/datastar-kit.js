@@ -6,8 +6,11 @@
  * Load this file BEFORE your app.js in the HTML <head>.
  *
  * Functions provided:
- *   postJSON(url, body)           — fetch wrapper for game engine POSTs
- *   showNotification(msg, err?)   — overlay notification (upper right)
+ *   postJSON(url, body)                       — fetch wrapper for game engine POSTs
+ *   showNotification(msg, err?, durationMs?)  — overlay notification (upper right);
+ *                                                3s auto-hide by default; a duration
+ *                                                of 0 keeps the message until the
+ *                                                next notification
  */
 
 // ---------------------------------------------------------------------------
@@ -24,18 +27,21 @@ function postJSON(url, body) {
 }
 
 // ---------------------------------------------------------------------------
-// showNotification — overlay notification (upper right, 3s auto-hide)
+// showNotification — overlay notification (upper right); 3s auto-hide by
+// default; a duration of 0 keeps the message until the next notification.
 // ds.clj clipboard helpers call showNotification('Copied!').
 // ---------------------------------------------------------------------------
 var _notifyTimer = null;
-function showNotification(msg, isError) {
+function showNotification(msg, isError, durationMs) {
+  if (durationMs === undefined) { durationMs = 3000; }
   // Prefer server-rendered #notification element (project-specific CSS).
   var el = document.getElementById('notification');
   if (el) {
     clearTimeout(_notifyTimer);
     el.textContent = msg;
     el.className = 'notification show' + (isError ? ' error' : '');
-    _notifyTimer = setTimeout(function() { el.className = 'notification'; }, 3000);
+    if (durationMs === 0) { return; }
+    _notifyTimer = setTimeout(function() { el.className = 'notification'; }, durationMs);
     return;
   }
   // Fallback: create floating notification
@@ -51,5 +57,6 @@ function showNotification(msg, isError) {
   el.style.background = isError ? '#e74c3c' : '#2ecc71';
   el.style.color = '#fff';
   el.style.opacity = '1';
-  _notifyTimer = setTimeout(function() { el.style.opacity = '0'; }, 3000);
+  if (durationMs === 0) { return; }
+  _notifyTimer = setTimeout(function() { el.style.opacity = '0'; }, durationMs);
 }
