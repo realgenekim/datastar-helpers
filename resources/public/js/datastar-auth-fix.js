@@ -7,15 +7,27 @@
 // embedded in the URL (https://user:pass@host/...), two browser behaviors break
 // libraries that drive the UI from the client:
 //
-//   1. history.pushState/replaceState throw SecurityError  -> handled by
-//      /js/history-patch.js
+//   1. history.pushState/replaceState throw SecurityError -> handled IN THIS
+//      FILE. The browser rule: the new URL, resolved against the DOCUMENT URL,
+//      must match the document URL in scheme, username, password, host, and
+//      port -- only path/query/fragment may differ. The document URL keeps the
+//      userinfo even though location.href REDACTS it. So:
+//        - a relative URL ("/x?page=4") inherits the document's userinfo ->
+//          ALLOWED
+//        - an absolute URL carrying the same userinfo -> ALLOWED
+//        - an absolute URL with NO userinfo (e.g. location.href itself, which
+//          is what htmx passes to history.replaceState) -> userinfo differs ->
+//          throws SecurityError
 //   2. The Fetch API REJECTS any URL that contains credentials, throwing
 //      "TypeError: Failed to construct 'Request': Request cannot be constructed
 //       from a URL that includes credentials".
 //
 // HTMX uses XMLHttpRequest, which tolerates credentialed URLs, so HTMX never hit
-// this. Datastar's @get()/@post() use fetch(), so it broke -- which is why the
-// first Datastar experiment was reverted (see docs/datastar-basic-auth.md).
+// case 2 -- but it hits case 1: it calls history.replaceState(state, title,
+// location.href) inside its XHR onload handler, and the uncaught SecurityError
+// aborts the swap and leaves htmx's per-element request lock held. Datastar's
+// @get()/@post() use fetch(), so it broke case 2 -- which is why the first
+// Datastar experiment was reverted (see docs/datastar-basic-auth.md).
 //
 // Why the previous fix was insufficient
 // --------------------------------------
@@ -35,19 +47,22 @@
 // challenge, so stripping them from request URLs is safe: the Authorization
 // header is still attached automatically by the browser.
 //
-// Load order: this file MUST execute before /vendor/datastar-aliased.js.
+// Load order: this file MUST be the first script on the page -- before htmx,
+// /vendor/datastar-aliased.js, and anything else that touches History, Request,
+// or fetch. Clojure consumers get that from datastar-kit.assets/basic-auth-script.
 // ============================================================================
 
 (function () {
   'use strict';
 
-  // Loading this bootstrap twice must not wrap Request/fetch twice. Expose the
+  // @spec BASIC-AUTH-LOAD-001, BASIC-AUTH-LOAD-004
+  // Loading this bootstrap twice must not wrap Request/fetch/History twice. Expose the
   // installed version so production diagnostics can prove that the bootstrap
   // ran before Datastar initialized.
   if (window.__datastarAuthFixVersion) {
     return;
   }
-  window.__datastarAuthFixVersion = '3';
+  window.__datastarAuthFixVersion = '4';
 
   // Resolve every parseable URL to an absolute string, then strip userinfo. The
   // absolute conversion is essential even when location.href LOOKS clean: some
@@ -73,23 +88,50 @@
   // inherits it from the document URL. stripCreds() is already a no-op for
   // ordinary absolute URLs, so an early "contains @" guard only creates a
   // false-negative failure mode.
-  console.log('[Datastar Auth Fix] v3 installed; resolving and sanitizing Request/fetch URLs');
+  console.log('[Datastar Auth Fix] v4 installed; sanitizing Request/fetch URLs and normalizing History URLs');
 
-  // --- 1. Best-effort: scrub credentials from the visible URL ---------------
-  // If history.replaceState is available (history-patch.js may have disabled it
-  // when it also threw SecurityError), clean location so document.baseURI and
-  // future relative-URL resolution never reintroduce credentials.
-  try {
-    var clean = stripCreds(window.location.href);
-    if (clean !== window.location.href) {
-      window.history.replaceState(window.history.state, '', clean);
-    }
-  } catch (e) {
-    /* replaceState blocked (SecurityError) -- the Request/fetch patches below
-       are the real safety net, so this is fine. */
+  // --- 1. History: always normalize same-host URLs to RELATIVE ---------------
+  // @spec BASIC-AUTH-HISTORY-001, BASIC-AUTH-HISTORY-002, BASIC-AUTH-HISTORY-003,
+  //       BASIC-AUTH-HISTORY-004, BASIC-AUTH-HISTORY-005, BASIC-AUTH-HISTORY-006
+  // A same-host URL is applied as a relative URL, so it inherits the document's
+  // userinfo and is always legal. A SecurityError never escapes to the caller:
+  // an uncaught throw inside htmx's XHR onload aborts the swap and leaves its
+  // request lock held. Installed with no load-time probe -- a probe exercises
+  // one call shape, and callers use others.
+  function toRelativeHistoryUrl(url) {
+    if (url == null) return url;
+    try {
+      var u = new URL(String(url), window.location.href);
+      var here = new URL(window.location.href);
+      if (u.protocol === here.protocol && u.host === here.host) {
+        return u.pathname + u.search + u.hash;
+      }
+    } catch (e) { /* unparseable -- leave untouched */ }
+    return url;
+  }
+
+  if (typeof window.History === 'function' && window.History.prototype) {
+    ['pushState', 'replaceState'].forEach(function (method) {
+      var nativeMethod = window.History.prototype[method];
+      if (typeof nativeMethod !== 'function') return;
+      window.History.prototype[method] = function (state, title, url) {
+        try {
+          return nativeMethod.call(this, state, title, toRelativeHistoryUrl(url));
+        } catch (e) {
+          if (e && e.name === 'SecurityError') {
+            if (window.console && console.warn) {
+              console.warn('[Datastar Auth Fix] history.' + method + ' refused; continuing', String(url));
+            }
+            return undefined;
+          }
+          throw e;
+        }
+      };
+    });
   }
 
   // --- 2. Patch the Request constructor (the throw site) --------------------
+  // @spec BASIC-AUTH-FETCH-001, BASIC-AUTH-FETCH-003
   if (typeof window.Request === 'function') {
     var NativeRequest = window.Request;
     window.Request = new Proxy(NativeRequest, {
@@ -108,7 +150,8 @@
     });
   }
 
-  // --- 3. Patch fetch (defense in depth + force credential sending) ---------
+  // --- 3. Patch fetch (defense in depth + force credential sending) ----------
+  // @spec BASIC-AUTH-FETCH-002, BASIC-AUTH-FETCH-003, BASIC-AUTH-FETCH-004
   var nativeFetch = window.fetch;
   window.fetch = function (input, init) {
     init = init || {};

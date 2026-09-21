@@ -4,6 +4,7 @@
    [clojure.test :refer [deftest is testing]]
    [datastar-kit.assets :as assets]))
 
+;; @spec BASIC-AUTH-LOAD-003
 (deftest script-tags-preserve-required-order
   (testing "the Basic-Auth bootstrap precedes the Datastar module"
     (let [tags (assets/script-tags
@@ -11,11 +12,22 @@
                   :basic-auth? true
                   :keyboard-chords? true
                   :kit-runtime? true})]
-      (is (= [:script {:src "/js/datastar-auth-fix.js?v=test"}] (first tags)))
+      (is (= :script (ffirst tags)))
+      (is (string? (second (first tags))))
+      (is (re-find #"__datastarAuthFixVersion" (second (first tags))))
+      (is (re-find #"BASIC-AUTH-HISTORY-001" (second (first tags))))
       (is (= :script (first (second tags))))
       (is (string? (second (second tags))))
       (is (= [:script {:type "module" :src "/vendor/datastar-aliased.js?v=test"}] (nth tags 2)))
       (is (= [:script {:src "/js/datastar-kit.js?v=test"}] (nth tags 3))))))
+
+;; @spec BASIC-AUTH-LOAD-002
+(deftest basic-auth-script-is-self-contained
+  (let [[tag source] (assets/basic-auth-script)]
+    (is (= :script tag))
+    (is (re-find #"History\.prototype" source))
+    (is (re-find #"toRelativeHistoryUrl" source))
+    (is (not (re-find #"history-patch\.js" source)))))
 
 (deftest keyboard-chords-script-is-self-contained
   (let [[tag source] (assets/keyboard-chords-script)]

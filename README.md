@@ -6,7 +6,7 @@ Shared, battle-tested building blocks for **Clojure + [Datastar](https://data-st
 - Are building a Clojure server that owns UI state and pushes finished HTML to the browser over SSE (Datastar's "server is the game loop" model) and don't want to re-derive the reliability rules every time
 - Have hit a *silent* Datastar failure — signals that won't react, SSE events the browser quietly ignores, a whole page that goes dead from one bad attribute — and want helpers that make those mistakes **impossible (or fail-fast)** instead of failing quietly in the browser
 - Have a long-lived SSE stream that mysteriously freezes, or POSTs that intermittently return 503 under load — and want the heartbeat + off-thread-push + dead-connection reaping that make a stream *boring*
-- Need Datastar's `@get`/`@post` to work behind **HTTP Basic Auth** (they don't out of the box — `fetch()` rejects credentialed URLs; this fixes it)
+- Need Datastar's `@get`/`@post` **and htmx's `hx-push-url`** to work behind **HTTP Basic Auth** (they don't out of the box — `fetch()` rejects credentialed URLs and `history.replaceState` throws on them; this fixes both)
 - Are tired of copy-pasting `ds.clj`/`sse.clj` into every app and watching them drift apart
 
 **Why this exists:** Datastar lets a Clojure server own all UI state and push finished HTML to the browser over SSE — the client becomes a display terminal. It's wonderful. But the surface has **sharp edges a Clojure compiler can't catch**: with no static types, a wrong signal expression, a mis-named SSE event, or a synchronous fan-out all compile fine and then fail *silently in the browser* or *intermittently in production*. This library is, in effect, **the guardrails the type system doesn't give you** — each helper either makes a wrong call impossible by construction, or makes it fail fast and loud (spec preconditions) instead of silently on the wire. The comments cite the specific failure each one prevents.
@@ -26,10 +26,10 @@ The server owns all state. The DOM is a display terminal. The client fires a POS
 | `src/datastar_kit/ds.clj` | `datastar-kit.ds` | Signal helpers, safe persistent mounts (`sse-mount-url`), continuous one-shot controls (`live-scrub`), keydown builders, `bind`, `post-action*`, clipboard/scroll helpers, and **spec-validated SSE event constructors**. |
 | `src/datastar_kit/sse.clj` | `datastar-kit.sse` | **Reliable SSE broadcast (raw-channel flavor)** for apps that write raw SSE strings: subscriber set, off-thread push agent, heartbeat, dead-connection reaping. |
 | `src/datastar_kit/sse_sdk.clj` | `datastar-kit.sse-sdk` | **Same reliability, SDK flavor** — for apps using the Datastar Clojure SDK (`hk/->sse-response` + a `sse-gen` + `patch-elements!`): off-thread broadcast or targeted `push!`/`push-to!`, idempotent heartbeat, reaping, and an `sse-response` helper with a per-connection `on-connect` hook. |
-| `src/datastar_kit/assets.clj` | `datastar-kit.assets` | Ordered Hiccup script tags with app-supplied cache-busting; guarantees the Basic-Auth bootstrap loads before Datastar. |
+| `src/datastar_kit/assets.clj` | `datastar-kit.assets` | Ordered Hiccup script tags with app-supplied cache-busting; embeds the Basic-Auth bootstrap and the keyboard chord engine so apps copy neither, and emits the bootstrap first. |
 | `resources/public/vendor/datastar-aliased.js` | — | The vendored Datastar client (use this, not a CDN). |
 | `resources/public/js/datastar-kit.js` | — | Small client runtime: `postJSON`, `showNotification`. |
-| `resources/public/js/datastar-auth-fix.js` | — | **HTTP Basic Auth fix** — makes `fetch()`-based `@get`/`@post` work behind credentialed URLs. See below. |
+| `resources/public/js/datastar-auth-fix.js` | — | **HTTP Basic Auth bootstrap** — makes `Request`/`fetch` (Datastar `@get`/`@post`) and `history.pushState`/`replaceState` (htmx `hx-push-url`, Datastar) work on a page opened from a credentialed URL. See below. |
 | `resources/public/js/keyboard-chords.js` | — | Reusable two-key browser shortcut engine with shifted-key normalization, editable-field suppression, timeout, and lifecycle resets. |
 
 ### Browser-owned keyboard chords
@@ -82,14 +82,13 @@ These are the things you'll otherwise rediscover the hard way. The library exist
   `(sse-response request tab-id on-connect)`, then use `(push-to! tab-id patches)`.
   The 2-arity `sse-response` and `push!` remain broadcast APIs. Initial reconnect
   state belongs in `on-connect`, which writes only to that connection.
-- **`fetch()` refuses credentialed URLs, so Datastar breaks behind HTTP Basic Auth.** Opening a page as `https://user:pass@host/…` makes `new Request(url)` throw *before* `fetch` runs (so wrapping `fetch` alone is too late). `datastar-auth-fix.js` idempotently patches both `window.Request` (via Proxy) and `fetch`; its URL sanitizer is a no-op unless a request URL has `user:pass@`. HTMX never hit this (it uses XHR). Load it **before** the Datastar module:
-  ```html
-  <script src="/js/datastar-auth-fix.js"></script>
-  <script type="module" src="/vendor/datastar-aliased.js"></script>
-  ```
-  Clojure consumers should prefer `(datastar-kit.assets/script-tags
-  {:asset-url views/static :basic-auth? true})` so ordering and cache-busting are
-  not reimplemented in every view.
+- **A page opened as `https://user:pass@host/…` breaks two browser URL APIs, in opposite directions.** The document URL keeps the userinfo while `location.href` shows it redacted, and each API checks against the document URL:
+  - **`Request`/`fetch` reject any URL that resolves to one with userinfo** — including a *relative* URL, which inherits it. `new Request(url)` throws *before* `fetch` runs, so wrapping `fetch` alone is too late. They need an **absolute URL with userinfo stripped**.
+  - **`history.pushState`/`replaceState` require the new URL to match the document's userinfo.** `replaceState(state, title, location.href)` — what htmx does before every `hx-push-url` swap — passes a redacted absolute URL and throws `SecurityError` inside the XHR `onload` handler: the swap is aborted, the element's request lock stays held, and every later trigger is silently dropped (pagination keys "just stop working"). They need a **relative URL**.
+
+  `datastar-auth-fix.js` is the one owner of this failure class. It idempotently wraps `window.Request` (via Proxy), `fetch`, and both History methods; it installs **unconditionally, with no load-time probe** (a probe exercises one call shape; callers use others), and it is a no-op on a page without credentials. A History `SecurityError` becomes a console warning, never an exception in the caller.
+
+  Use `(datastar-kit.assets/basic-auth-script)`, or `(datastar-kit.assets/script-tags {:asset-url views/static :basic-auth? true})`. Both embed the script at compile time, so thin-JAR builds need no copy. **It must be the first script on the page** — before htmx, Datastar, and anything else that touches History, Request, or fetch. **Do not keep an app-local copy of `datastar-auth-fix.js` or a separate History shim**; a second owner is how this class regressed. Intent and specs: `docs/intent/basic-auth-bootstrap/`.
 - **Match selection state to the workflow.** Server-authoritative selection (toggle → SSE morph) is great for single highlights; for *multi-select-then-batch-act*, a client-side `Set` is the right tool (0 ms local toggles vs a round-trip per click). Server-authoritative ≠ always better.
 
 ## How to consume it — dev vs CI

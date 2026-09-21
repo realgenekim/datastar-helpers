@@ -26,12 +26,31 @@
   []
   [:script keyboard-chords-source])
 
+(def ^:private basic-auth-source
+  (inline-resource "public/js/datastar-auth-fix.js"))
+
+;; @spec BASIC-AUTH-LOAD-002
+(defn basic-auth-script
+  "Return a self-contained script tag for the Basic-Auth bootstrap.
+
+   Patches Request/fetch (credentialed URLs) and History (pushState/
+   replaceState SecurityError) so Datastar and htmx work behind HTTP Basic
+   Auth. MUST be the first script on the page, before htmx and Datastar. Safe
+   to include on pages without credentials, and safe to include twice -- the
+   script is idempotent via `__datastarAuthFixVersion`.
+
+   The source is embedded when datastar-kit.assets is compiled, so consumers do
+   not need to keep their own copy of datastar-auth-fix.js."
+  []
+  [:script basic-auth-source])
+
+;; @spec BASIC-AUTH-LOAD-003
 (defn script-tags
   "Return Datastar script tags in dependency order.
 
    Options:
    - :asset-url       path -> public URL, commonly an app cache-buster (default identity)
-   - :basic-auth?     include datastar-auth-fix.js before Datastar (default false)
+   - :basic-auth?     include the inlined Basic-Auth bootstrap before Datastar (default false)
    - :keyboard-chords? include keyboard-chords.js before consumer scripts (default false)
    - :kit-runtime?    include datastar-kit.js after Datastar (default false)
    - :datastar-path   override the vendored Datastar path
@@ -44,15 +63,15 @@
          kit-runtime? false
          datastar-path "/vendor/datastar-aliased.js"}}]
   (seq
-    (cond-> []
-      basic-auth?
-      (conj [:script {:src (asset-url "/js/datastar-auth-fix.js")}])
+   (cond-> []
+     basic-auth?
+     (conj (basic-auth-script))
 
-      keyboard-chords?
-      (conj (keyboard-chords-script))
+     keyboard-chords?
+     (conj (keyboard-chords-script))
 
-      true
-      (conj [:script {:type "module" :src (asset-url datastar-path)}])
+     true
+     (conj [:script {:type "module" :src (asset-url datastar-path)}])
 
-      kit-runtime?
-      (conj [:script {:src (asset-url "/js/datastar-kit.js")}]))))
+     kit-runtime?
+     (conj [:script {:src (asset-url "/js/datastar-kit.js")}]))))
