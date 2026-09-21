@@ -207,6 +207,41 @@
 
 ;; ---- KIT-ASSETS-005: inline comment stripping ----
 
+;; @spec KIT-ASSETS-006
+(deftest the-kit-embeds-its-own-file-not-a-shadowing-copy
+  (let [u #(java.net.URL. %)]
+    (testing "directory checkout: an app copy earlier on the classpath is skipped"
+      (let [app (u "file:/work/my-app/resources/public/vendor/datastar-aliased.js")
+            kit (u "file:/home/me/.gitlibs/libs/genek/datastar-helpers/abc123/resources/public/vendor/datastar-aliased.js")]
+        (is (= kit (assets/own-resource-url
+                    (u "file:/home/me/.gitlibs/libs/genek/datastar-helpers/abc123/src/datastar_kit/assets.clj")
+                    [app kit])))))
+    (testing "a sibling checkout with a similar name is not mistaken for the kit"
+      (let [other (u "file:/src/datastar-helpers-fork/resources/public/js/datastar-kit.js")
+            kit (u "file:/src/datastar-helpers/resources/public/js/datastar-kit.js")]
+        (is (= kit (assets/own-resource-url
+                    (u "file:/src/datastar-helpers/src/datastar_kit/assets.clj")
+                    [other kit])))))
+    (testing "jar: the provider inside the same jar is chosen"
+      (let [app (u "file:/work/my-app/resources/public/js/datastar-kit.js")
+            kit (u "jar:file:/m2/datastar-helpers-1.0.jar!/public/js/datastar-kit.js")]
+        (is (= kit (assets/own-resource-url
+                    (u "jar:file:/m2/datastar-helpers-1.0.jar!/datastar_kit/assets.clj")
+                    [app kit])))))
+    (testing "no provider under the kit's root -> nil (the macro turns that into a compile error)"
+      (is (nil? (assets/own-resource-url
+                 (u "file:/src/datastar-helpers/src/datastar_kit/assets.clj")
+                 [(u "file:/work/my-app/resources/public/js/datastar-kit.js")]))))))
+
+;; @spec KIT-ASSETS-006
+(deftest embedded-hashes-match-the-kits-own-files-on-disk
+  ;; The end-to-end form of the rule above: whatever else is on the classpath, the URL hash is
+  ;; the hash of the file that ships in this repository.
+  (doseq [[asset-name file] {"datastar-aliased.js" "resources/public/vendor/datastar-aliased.js"
+                             "datastar-kit.js" "resources/public/js/datastar-kit.js"}]
+    (let [on-disk (subs (assets/sha256-hex (java.nio.file.Files/readAllBytes (.toPath (io/file file)))) 0 12)]
+      (is (= (str "/_kit/" on-disk "/" asset-name) (assets/asset-path asset-name))))))
+
 ;; @spec KIT-ASSETS-005
 (deftest strip-comment-lines-drops-full-line-comments-only
   (testing "drops a full-line comment, including an indented one"

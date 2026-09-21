@@ -9,6 +9,7 @@ Design: `kit-assets-design.md`. "A kit asset" is a browser file the kit serves b
 - [x] **KIT-ASSETS-003**: When `datastar-kit.assets/asset-path` is called with the name of a kit asset, it shall return `/_kit/<hash>/<name>`, where `<hash>` is the first 12 hexadecimal characters of the SHA-256 of that asset's embedded bytes.
 - [x] **KIT-ASSETS-004**: If `datastar-kit.assets/asset-path` is called with a name that is not a kit asset, then it shall throw an exception naming the unknown asset.
 
+- [x] **KIT-ASSETS-006**: When more than one classpath root provides a kit asset's resource path at compile time, the namespace `datastar-kit.assets` shall embed the file that belongs to the kit (the provider under the same root as the namespace's own source), and if no such provider exists then compilation shall fail naming the path and the providers.
 - [x] **KIT-ASSETS-005**: When the kit emits an asset inline as a script element (the Basic-Auth bootstrap, the keyboard chord engine), it shall omit every line that contains only a JavaScript line comment.
 
 ## Serving

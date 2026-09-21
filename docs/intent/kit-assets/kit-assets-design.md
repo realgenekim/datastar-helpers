@@ -17,6 +17,8 @@ This component removes the need for a copy: the kit carries these assets inside 
 
 `datastar-kit.assets` reads each served asset when the namespace compiles and keeps its bytes. A JVM class file limits one string constant to 65,535 bytes, and the Datastar client is already half of that, so the text is emitted as a sequence of constants below the limit and joined when the namespace loads.
 
+The file read is the kit's **own**, not whichever wins on the classpath. A consuming app's `resources/` precedes its dependencies, so a plain classpath lookup at compile time returns an app's copy of the asset when one exists — and the kit would embed, hash, and serve the app's stale bytes as its own, with the copy audit comparing the copy against itself. The kit instead enumerates every provider of the path and takes the one under the same root as its own source file (`<root>/src/…` pairs with `<root>/resources/…`; inside a jar, the same jar). When no provider qualifies, compilation fails.
+
 For each asset the kit derives a **content hash**: the first 12 hex characters of the SHA-256 of its bytes.
 
 ### Inline assets
@@ -52,6 +54,7 @@ The middleware supports both Ring handler shapes (one-argument synchronous, thre
 | Decision | Chosen | Alternatives Considered | Rationale |
 |----------|--------|------------------------|-----------|
 | How the bytes reach production | Embedded in the compiled namespace | Read `io/resource` at runtime; document a per-app copy step | The resource is absent from thin-JAR images, so a runtime read returns nothing there. Copies drift silently and shadow the kit's file in development. |
+| Which file is embedded when several roots provide the path | The provider under the kit's own root | `io/resource` (first on the classpath) | First-on-classpath is the consuming app's copy whenever it has one, which silently turns the kit into a carrier for the stale file it exists to replace. |
 | Working under the 64 KB constant limit | Emit the text as several constants, join at load | Base64-encode into chunks; keep assets under 64 KB | Joining plain chunks keeps the embedded text greppable in the class and needs no decode step. The Datastar client's size is not ours to bound. |
 | URL scheme | Content hash in the path | App cache-buster query (`?v=<build>`); unversioned path with ETag | A build-scoped query string re-downloads unchanged assets on every deploy. A hashed path is cacheable forever and shows which bytes a page asked for. |
 | Hash mismatch | Serve current bytes, `no-cache` | 404; redirect to the current URL | A 404 breaks pages mid-deploy. A redirect adds a round trip to fix a condition that lasts seconds. |

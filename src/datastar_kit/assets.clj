@@ -40,18 +40,47 @@
                       end)]
             (recur end (conj chunks (subs s start end)))))))))
 
-;; @spec KIT-ASSETS-001, KIT-ASSETS-002
+;; @spec KIT-ASSETS-006
+(defn own-resource-url
+  "The URL of the kit's OWN copy of a classpath resource, chosen from `providers`
+   (every classpath resource at that path) by where this namespace's source was
+   loaded from (`source-url`).
+
+   `io/resource` returns the FIRST provider, and an app's resources/ precedes its
+   dependencies -- so an app carrying a copy of a kit asset would have its copy
+   embedded here in place of the kit's. The kit's own file is the one under the same
+   root as this source file: `<root>/src/datastar_kit/assets.clj` pairs with
+   `<root>/resources/...` in a directory checkout, and `jar:...!/datastar_kit/assets.clj`
+   pairs with `jar:...!/...` in a jar. Returns nil when no provider shares that root."
+  [source-url providers]
+  (let [source (str source-url)
+        suffix "datastar_kit/assets.clj"]
+    (when (.endsWith source suffix)
+      (let [base (subs source 0 (- (count source) (count suffix)))
+            ;; directory checkout: .../src/ -> .../ ; jar: jar:...!/ stays as is
+            root (if (.endsWith base "/src/") (subs base 0 (- (count base) 4)) base)]
+        (first (filter #(.startsWith (str %) root) providers))))))
+
+;; @spec KIT-ASSETS-001, KIT-ASSETS-002, KIT-ASSETS-006
 (defmacro ^:private inline-resource
-  "Embed a classpath resource while compiling this namespace. This deliberately
-   survives thin-JAR builds that AOT-compile git deps but omit their resource dirs.
+  "Embed the kit's own copy of a classpath resource while compiling this namespace.
+   This deliberately survives thin-JAR builds that AOT-compile git deps but omit
+   their resource dirs, and it never embeds a consuming app's copy that shadows the
+   kit's file on the classpath (see own-resource-url).
 
    The resource text is emitted as several string-literal chunks (see
    chunk-text) and joined at load, because a single asset can exceed the
    JVM's 65,535-byte string-constant limit."
   [path]
-  (let [resource (io/resource path)]
+  (let [loader (clojure.lang.RT/baseLoader)
+        source-url (.getResource loader "datastar_kit/assets.clj")
+        providers (enumeration-seq (.getResources loader path))
+        resource (own-resource-url source-url providers)]
     (when-not resource
-      (throw (ex-info "Missing datastar-kit classpath resource" {:path path})))
+      (throw (ex-info "Missing datastar-kit classpath resource (no provider under the kit's own root)"
+                      {:path path
+                       :kit-source (str source-url)
+                       :providers (mapv str providers)})))
     `(str ~@(chunk-text (slurp resource)))))
 
 ;; @spec KIT-ASSETS-005
