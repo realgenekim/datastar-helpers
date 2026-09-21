@@ -65,6 +65,7 @@ Intent components:
 
 | Component | Owns |
 |---|---|
+| `consumer-contract` | Detecting that an app carries or shadows a kit asset: a runtime audit inside `script-tags`, and contract tests an app adopts in one line. |
 | `kit-assets` | Embedding, addressing, and serving the browser files pages load by URL (the Datastar client, the kit runtime), so no app carries a copy. |
 | `basic-auth-bootstrap` | Making browser URL APIs (Request, fetch, History) work on a page opened from a URL with embedded Basic-Auth credentials, and delivering that script first on the page. |
 | `ds` | Signal helpers, persistent mounts, continuous controls, keydown builders, SSE event constructors. *(design not yet written)* |

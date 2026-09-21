@@ -32,11 +32,11 @@
 // Why the previous fix was insufficient
 // --------------------------------------
 // The original fetch-credential-strip.js wrapped ONLY window.fetch. But Datastar
-// (and the browser) often construct `new Request(url, init)` BEFORE calling
+// (and the browser) often construct new Request(url, init) BEFORE calling
 // fetch(input, init). That Request constructor is where the TypeError is thrown,
 // so wrapping fetch alone never gets a chance to run. The fix below patches BOTH:
 //
-//   * window.Request  (via Proxy, so `instanceof` and the prototype chain stay
+//   * window.Request  (via Proxy, so instanceof and the prototype chain stay
 //     intact) -- strips credentials from the URL before the native constructor
 //     ever sees them.
 //   * window.fetch    -- strips credentials from string / Request inputs as a

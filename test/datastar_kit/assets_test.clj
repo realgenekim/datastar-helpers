@@ -3,16 +3,19 @@
    [clojure.java.io :as io]
    [clojure.string :as str]
    [clojure.test :refer [deftest is testing use-fixtures]]
-   [datastar-kit.assets :as assets])
+   [datastar-kit.assets :as assets]
+   [datastar-kit.test-helpers :as th])
   (:import
    (java.security MessageDigest)))
 
-;; middleware-installed? is process-global (defonce atom), so each test must
-;; start from a known state -- otherwise a test that installs the middleware
-;; leaks that state into every test that runs after it.
+;; middleware-installed? and audit-done? are process-global (defonce atoms), so
+;; each test must start from a known state -- otherwise a test that installs
+;; the middleware or runs the copy audit leaks that state into every test that
+;; runs after it.
 (use-fixtures :each
   (fn [f]
     (reset! @#'assets/middleware-installed? false)
+    (reset! @#'assets/audit-done? false)
     (f)))
 
 (defn- sha256-hex12 [^bytes bs]
@@ -44,7 +47,7 @@
       (is (= :script (ffirst tags)))
       (is (string? (second (first tags))))
       (is (re-find #"__datastarAuthFixVersion" (second (first tags))))
-      (is (re-find #"BASIC-AUTH-HISTORY-001" (second (first tags))))
+      (is (re-find #"toRelativeHistoryUrl" (second (first tags))))
       (is (= :script (first (second tags))))
       (is (string? (second (second tags))))
       (is (= [:script {:type "module" :src "/vendor/datastar-aliased.js?v=test"}] (nth tags 2)))
@@ -62,7 +65,7 @@
   (let [[tag source] (assets/keyboard-chords-script)]
     (is (= :script tag))
     (is (re-find #"DatastarKeyboardChords" source))
-    (is (re-find #"standalone Shift keydown" source))))
+    (is (re-find #"modifierKeys" source))))
 
 (deftest script-tags-have-small-safe-default
   (is (= [[:script {:type "module" :src "/vendor/datastar-aliased.js"}]]
@@ -201,3 +204,122 @@
   (testing "after install: :datastar-path still overrides, still through asset-url"
     (let [tags (assets/script-tags {:asset-url #(str % "?v=t") :datastar-path "/x.js"})]
       (is (= [:script {:type "module" :src "/x.js?v=t"}] (first tags))))))
+
+;; ---- KIT-ASSETS-005: inline comment stripping ----
+
+;; @spec KIT-ASSETS-005
+(deftest strip-comment-lines-drops-full-line-comments-only
+  (testing "drops a full-line comment, including an indented one"
+    (is (= "a\nc" (assets/strip-comment-lines "a\n// b\nc"))))
+  (testing "drops an indented full-line comment"
+    (is (= "a\nc" (assets/strip-comment-lines "a\n    // b\nc"))))
+  (testing "keeps a code line that contains // after code"
+    (let [line "var u = \"http://x\"; // note"]
+      (is (= line (assets/strip-comment-lines line)))))
+  (testing "mixed: comment lines vanish, code lines (even with trailing //) survive"
+    (is (= "var u = \"http://x\"; // note\ncode();"
+           (assets/strip-comment-lines
+            "// header comment\nvar u = \"http://x\"; // note\n  // another full-line comment\ncode();")))))
+
+;; @spec KIT-ASSETS-005
+(deftest inline-scripts-have-no-comment-only-lines
+  (testing "basic-auth-script"
+    (let [[_ source] (assets/basic-auth-script)]
+      (is (not-any? #(str/starts-with? (str/trim %) "//") (str/split-lines source)))
+      (is (re-find #"__datastarAuthFixVersion" source))
+      (is (re-find #"toRelativeHistoryUrl" source))))
+  (testing "keyboard-chords-script"
+    (let [[_ source] (assets/keyboard-chords-script)]
+      (is (not-any? #(str/starts-with? (str/trim %) "//") (str/split-lines source)))
+      (is (re-find #"DatastarKeyboardChords" source)))))
+
+;; @spec KIT-ASSETS-005
+(deftest inline-source-files-contain-no-backtick
+  (testing "the assumption that makes whole-line comment stripping safe"
+    (doseq [path ["public/js/datastar-auth-fix.js" "public/js/keyboard-chords.js"]]
+      (testing path
+        (is (not (str/includes? (slurp (io/resource path)) "`")))))))
+
+;; ---- CONTRACT-001..003: copy audit ----
+
+(defn- finding-for [findings path]
+  (first (filter #(= path (:path %)) findings)))
+
+;; @spec CONTRACT-001
+(deftest copy-audit-shadowed-when-more-than-one-provider
+  (testing "development shape: kit resource + app copy with different bytes -> shadowed"
+    (let [tmp (th/create-temp-dir "kit-contract-shadow-diff-")]
+      (th/spit-file tmp "public/vendor/datastar-aliased.js" "totally different bytes")
+      (th/with-classpath-dir tmp (.getContextClassLoader (Thread/currentThread))
+        (let [findings (assets/copy-audit)
+              finding (finding-for findings "public/vendor/datastar-aliased.js")]
+          (is (= 1 (count findings)))
+          (is (= :shadowed (:problem finding)))
+          (is (= 2 (count (:providers finding))))))))
+  (testing "development shape: identical bytes -> still shadowed (one of them silently wins)"
+    (let [tmp (th/create-temp-dir "kit-contract-shadow-same-")
+          real-bytes (slurp (io/resource "public/vendor/datastar-aliased.js"))]
+      (th/spit-file tmp "public/vendor/datastar-aliased.js" real-bytes)
+      (th/with-classpath-dir tmp (.getContextClassLoader (Thread/currentThread))
+        (let [findings (assets/copy-audit)
+              finding (finding-for findings "public/vendor/datastar-aliased.js")]
+          (is (= :shadowed (:problem finding)))
+          (is (= 2 (count (:providers finding)))))))))
+
+;; @spec CONTRACT-002
+(deftest copy-audit-stale-copy-thin-jar-shape
+  (let [tmp (th/create-temp-dir "kit-contract-stale-")]
+    (th/spit-file tmp "public/vendor/datastar-aliased.js" "stale bytes")
+    (th/with-classpath-dir tmp (ClassLoader/getPlatformClassLoader)
+      (let [findings (assets/copy-audit)
+            finding (finding-for findings "public/vendor/datastar-aliased.js")]
+        (is (= 1 (count findings)))
+        (is (= :stale-copy (:problem finding)))
+        (is (not= (:kit-sha finding) (:sha (first (:providers finding)))))
+        (is (str/includes? (:url (first (:providers finding))) (str tmp)))))))
+
+;; @spec CONTRACT-003
+(deftest copy-audit-no-finding-when-identical-or-absent
+  (testing "thin-jar shape, identical copy -> no finding"
+    (let [tmp (th/create-temp-dir "kit-contract-identical-")]
+      (io/make-parents (io/file tmp "public/vendor/datastar-aliased.js"))
+      (with-open [in (io/input-stream (io/resource "public/vendor/datastar-aliased.js"))]
+        (io/copy in (io/file tmp "public/vendor/datastar-aliased.js")))
+      (th/with-classpath-dir tmp (ClassLoader/getPlatformClassLoader)
+        (is (empty? (assets/copy-audit))))))
+  (testing "thin-jar shape, empty temp dir (no app copies) -> no findings"
+    (let [tmp (th/create-temp-dir "kit-contract-empty-")]
+      (th/with-classpath-dir tmp (ClassLoader/getPlatformClassLoader)
+        (is (empty? (assets/copy-audit))))))
+  (testing "the repo's own normal classpath -> empty"
+    (is (empty? (assets/copy-audit)))))
+
+;; ---- CONTRACT-010..012: runtime warning ----
+
+;; @spec CONTRACT-010, CONTRACT-011
+(deftest script-tags-warns-once-on-stderr-for-a-stale-copy
+  (let [tmp (th/create-temp-dir "kit-contract-warn-")]
+    (th/spit-file tmp "public/vendor/datastar-aliased.js" "stale bytes")
+    (th/with-classpath-dir tmp (ClassLoader/getPlatformClassLoader)
+      (let [kit-sha (assets/sha256-hex
+                     (.getBytes (slurp (io/resource "public/vendor/datastar-aliased.js")) "UTF-8"))
+            err1 (java.io.StringWriter.)
+            _ (binding [*err* err1] (assets/script-tags {}))
+            output1 (str err1)
+            err2 (java.io.StringWriter.)
+            _ (binding [*err* err2] (assets/script-tags {}))
+            output2 (str err2)]
+        (testing "first call: prints the finding"
+          (is (str/includes? output1 "public/vendor/datastar-aliased.js"))
+          (is (str/includes? output1 ":stale-copy"))
+          (is (str/includes? output1 kit-sha)))
+        (testing "second call: prints nothing"
+          (is (= "" output2)))))))
+
+;; @spec CONTRACT-012
+(deftest script-tags-returns-same-tags-when-audit-throws
+  (let [opts {:asset-url #(str % "?v=t") :basic-auth? true :keyboard-chords? true :kit-runtime? true}
+        expected (assets/script-tags opts)]
+    (reset! @#'assets/audit-done? false)
+    (with-redefs [assets/copy-audit (fn [] (throw (ex-info "boom" {})))]
+      (is (= expected (assets/script-tags opts))))))

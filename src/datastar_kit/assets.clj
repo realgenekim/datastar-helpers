@@ -9,7 +9,8 @@
    `wrap-kit-assets` at content-hashed URLs, so a consuming app has no file to
    copy and no path to write."
   (:require
-   [clojure.java.io :as io])
+   [clojure.java.io :as io]
+   [clojure.string :as str])
   (:import
    (java.security MessageDigest)))
 
@@ -53,21 +54,43 @@
       (throw (ex-info "Missing datastar-kit classpath resource" {:path path})))
     `(str ~@(chunk-text (slurp resource)))))
 
+;; @spec KIT-ASSETS-005
+(defn strip-comment-lines
+  "Return s with every line whose trimmed content starts with a JavaScript
+   line comment (//) removed, lines rejoined with \\n. A line that merely
+   CONTAINS // after real code is left untouched -- only a line that is
+   NOTHING but a comment (after trimming leading whitespace) is dropped.
+
+   Safe only for source that contains no multi-line string or template
+   literal (see inline-source-files-contain-no-backtick)."
+  [s]
+  (->> (str/split s #"\n" -1)
+       (remove #(str/starts-with? (str/trim %) "//"))
+       (str/join "\n")))
+
 (def ^:private keyboard-chords-source
   (inline-resource "public/js/keyboard-chords.js"))
+
+(def ^:private keyboard-chords-source-stripped
+  (strip-comment-lines keyboard-chords-source))
 
 (defn keyboard-chords-script
   "Return a self-contained script tag for the shared keyboard chord engine.
 
    The source is embedded when datastar-kit.assets is compiled, so consumers do
-   not need to copy dependency resources into thin-JAR or container static dirs."
+   not need to copy dependency resources into thin-JAR or container static dirs.
+   Comment-only lines are stripped before emission (KIT-ASSETS-005); the copy
+   audit always hashes the unstripped embedded text."
   []
-  [:script keyboard-chords-source])
+  [:script keyboard-chords-source-stripped])
 
 (def ^:private basic-auth-source
   (inline-resource "public/js/datastar-auth-fix.js"))
 
-;; @spec BASIC-AUTH-LOAD-002
+(def ^:private basic-auth-source-stripped
+  (strip-comment-lines basic-auth-source))
+
+;; @spec BASIC-AUTH-LOAD-002, KIT-ASSETS-005
 (defn basic-auth-script
   "Return a self-contained script tag for the Basic-Auth bootstrap.
 
@@ -78,9 +101,11 @@
    script is idempotent via `__datastarAuthFixVersion`.
 
    The source is embedded when datastar-kit.assets is compiled, so consumers do
-   not need to keep their own copy of datastar-auth-fix.js."
+   not need to keep their own copy of datastar-auth-fix.js. Comment-only lines
+   are stripped before emission (KIT-ASSETS-005); the copy audit always hashes
+   the unstripped embedded text."
   []
-  [:script basic-auth-source])
+  [:script basic-auth-source-stripped])
 
 (def ^:private datastar-aliased-source
   (inline-resource "public/vendor/datastar-aliased.js"))
@@ -88,11 +113,16 @@
 (def ^:private datastar-kit-runtime-source
   (inline-resource "public/js/datastar-kit.js"))
 
+(defn sha256-hex
+  "The full 64 lowercase hex characters of the SHA-256 digest of bs."
+  [^bytes bs]
+  (let [digest (.digest (MessageDigest/getInstance "SHA-256") bs)]
+    (apply str (map #(format "%02x" (bit-and (int %) 0xff)) digest))))
+
 (defn- sha256-hex12
   "The first 12 lowercase hex characters of the SHA-256 of bs."
   [^bytes bs]
-  (let [digest (.digest (MessageDigest/getInstance "SHA-256") bs)]
-    (subs (apply str (map #(format "%02x" (bit-and (int %) 0xff)) digest)) 0 12)))
+  (subs (sha256-hex bs) 0 12))
 
 (defn- embedded-asset [source]
   (let [bs (.getBytes ^String source "UTF-8")]
@@ -103,6 +133,77 @@
   "Kit assets served by URL: name -> {:bytes <byte[] UTF-8> :sha <12-hex sha256>}."
   {"datastar-aliased.js" (embedded-asset datastar-aliased-source)
    "datastar-kit.js" (embedded-asset datastar-kit-runtime-source)})
+
+(def ^:private kit-asset-source-paths
+  "The four kit asset classpath resource paths, in the copy audit's report
+   order, paired with the raw text the kit embedded for each at compile time."
+  [["public/vendor/datastar-aliased.js" datastar-aliased-source]
+   ["public/js/datastar-kit.js" datastar-kit-runtime-source]
+   ["public/js/datastar-auth-fix.js" basic-auth-source]
+   ["public/js/keyboard-chords.js" keyboard-chords-source]])
+
+(defn- resource-providers
+  "Every classpath provider of path, as resolved by the thread's context class
+   loader: a vector of {:url <str> :sha <64-hex sha256 of the provider's bytes>}."
+  [path]
+  (let [cl (.getContextClassLoader (Thread/currentThread))]
+    (vec
+     (for [^java.net.URL url (enumeration-seq (.getResources cl path))]
+       {:url (str url)
+        :sha (sha256-hex (with-open [in (.openStream url)]
+                           (.readAllBytes in)))}))))
+
+;; @spec CONTRACT-001, CONTRACT-002, CONTRACT-003
+(defn copy-audit
+  "Inspect, through the thread's context class loader, every classpath
+   provider of each kit asset resource path, and compare it with the bytes
+   the kit embedded at compile time. Returns a vector of findings, in
+   kit-asset-source-paths order:
+
+   - more than one provider -> {:path :problem :shadowed :kit-sha :providers}
+   - exactly one provider whose bytes differ from the embedded bytes ->
+     {:path :problem :stale-copy :kit-sha :providers}
+   - no provider, or one provider with identical bytes -> no finding for
+     that path"
+  []
+  (vec
+   (keep
+    (fn [[path raw]]
+      (let [kit-sha (sha256-hex (.getBytes ^String raw "UTF-8"))
+            providers (resource-providers path)]
+        (cond
+          (> (count providers) 1)
+          {:path path :problem :shadowed :kit-sha kit-sha :providers providers}
+
+          (and (= (count providers) 1) (not= kit-sha (:sha (first providers))))
+          {:path path :problem :stale-copy :kit-sha kit-sha :providers providers}
+
+          :else nil)))
+    kit-asset-source-paths)))
+
+(defonce ^:private audit-done? (atom false))
+
+(defn- format-finding
+  "One human-readable warning line for a copy-audit finding."
+  [{:keys [path problem kit-sha providers]}]
+  (str "[datastar-kit] WARNING " path " is " problem
+       " -- kit sha256 " kit-sha "; "
+       (str/join "; " (map (fn [{:keys [url sha]}] (str "provider " url " sha256 " sha)) providers))
+       ". Delete the app's copy; the kit serves this asset itself."))
+
+;; @spec CONTRACT-010, CONTRACT-011, CONTRACT-012
+(defn- warn-on-copies-once!
+  "Run the copy audit the first time this is called in a process and print one
+   warning line per finding to standard error. A no-op on every later call,
+   and never lets an audit failure escape -- script-tags must return the same
+   tags whether the audit finds nothing, finds something, or throws."
+  []
+  (when (compare-and-set! audit-done? false true)
+    (try
+      (doseq [finding (copy-audit)]
+        (binding [*out* *err*]
+          (println (format-finding finding))))
+      (catch Throwable _ nil))))
 
 ;; @spec KIT-ASSETS-003, KIT-ASSETS-004
 (defn asset-path
@@ -153,7 +254,7 @@
        (respond response)
        (handler request respond raise)))))
 
-;; @spec BASIC-AUTH-LOAD-003, KIT-ASSETS-020, KIT-ASSETS-021, KIT-ASSETS-022
+;; @spec BASIC-AUTH-LOAD-003, KIT-ASSETS-020, KIT-ASSETS-021, KIT-ASSETS-022, CONTRACT-010, CONTRACT-011, CONTRACT-012
 (defn script-tags
   "Return Datastar script tags in dependency order.
 
@@ -172,12 +273,17 @@
    path, whether or not the middleware is installed, and is always passed
    through :asset-url.
 
+   The first call in a process also runs the copy audit and warns on standard
+   error for each finding (see copy-audit); every later call is silent, and a
+   failed audit never changes what this returns.
+
    Example:
    (script-tags {:asset-url views/static :basic-auth? true :kit-runtime? true})"
   [{:keys [asset-url basic-auth? keyboard-chords? kit-runtime? datastar-path]
     :or {asset-url identity
          basic-auth? false
          kit-runtime? false}}]
+  (warn-on-copies-once!)
   (let [module-src (cond
                      datastar-path (asset-url datastar-path)
                      @middleware-installed? (asset-path "datastar-aliased.js")

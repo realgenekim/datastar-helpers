@@ -62,7 +62,7 @@
         return false;
       }
 
-      // Browsers emit a standalone Shift keydown between `g` and shifted `S`.
+      // Browsers emit a standalone Shift keydown between "g" and shifted "S".
       // It must not consume or cancel the pending prefix.
       if (modifierKeys.indexOf(rawKey) !== -1) return pending !== null;
 

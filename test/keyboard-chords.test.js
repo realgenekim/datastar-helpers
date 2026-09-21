@@ -5,10 +5,22 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(
+const rawSource = fs.readFileSync(
   path.join(__dirname, '../resources/public/js/keyboard-chords.js'),
   'utf8'
 );
+
+// The kit emits this script inline with whole-line comments stripped
+// (datastar-kit.assets/strip-comment-lines). Every test below runs against both
+// forms, so stripping can never change behavior unnoticed.
+// @spec KIT-ASSETS-005
+const variants = [
+  ['as authored', rawSource],
+  ['as served inline (comment lines stripped)',
+   rawSource.split('\n').filter((line) => !line.trim().startsWith('//')).join('\n')]
+];
+let source = rawSource;
+
 
 function install() {
   const listeners = {};
@@ -115,4 +127,8 @@ function main() {
   process.stdout.write('keyboard-chords regression tests passed\n');
 }
 
-main();
+for (const [label, text] of variants) {
+  source = text;
+  main();
+  process.stdout.write('  (' + label + ')\n');
+}
