@@ -25,6 +25,8 @@ For each asset the kit derives a **content hash**: the first 12 hex characters o
 
 The Basic-Auth bootstrap and the keyboard chord engine are emitted inline on every page, so their size is paid on every page view. Their source files are heavily commented — in the bootstrap, comments are roughly two thirds of the file. The kit strips lines that contain only a line comment when it emits them inline; the hash used by the copy audit is always taken over the unstripped file. Stripping whole lines is safe only while these files contain no multi-line string or template literal, which a test asserts.
 
+Hiccup 2 escapes string content, so a plain string inside `[:script …]` renders as `u.username = &apos;&apos;` — syntactically broken JavaScript that fails silently in the browser. Hiccup 1 does not escape. The kit has no Hiccup dependency, so it looks up Hiccup 2's raw-string constructor at load and wraps inline script content with it when present; `(str content)` is the JavaScript either way.
+
 ## Addressing
 
 An asset's URL is `/_kit/<content-hash>/<name>`, returned by `(asset-path name)`. The hash makes the URL change exactly when the bytes change, which allows permanent caching and makes version skew visible in page source. Apps do not pass these URLs through their own cache-buster.

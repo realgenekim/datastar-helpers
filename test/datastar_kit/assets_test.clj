@@ -45,27 +45,47 @@
                  :keyboard-chords? true
                  :kit-runtime? true})]
       (is (= :script (ffirst tags)))
-      (is (string? (second (first tags))))
-      (is (re-find #"__datastarAuthFixVersion" (second (first tags))))
-      (is (re-find #"toRelativeHistoryUrl" (second (first tags))))
+      (is (re-find #"__datastarAuthFixVersion" (str (second (first tags)))))
+      (is (re-find #"toRelativeHistoryUrl" (str (second (first tags)))))
       (is (= :script (first (second tags))))
-      (is (string? (second (second tags))))
+      (is (re-find #"DatastarKeyboardChords" (str (second (second tags)))))
       (is (= [:script {:type "module" :src "/vendor/datastar-aliased.js?v=test"}] (nth tags 2)))
       (is (= [:script {:src "/js/datastar-kit.js?v=test"}] (nth tags 3))))))
 
 ;; @spec BASIC-AUTH-LOAD-002
 (deftest basic-auth-script-is-self-contained
-  (let [[tag source] (assets/basic-auth-script)]
+  (let [[tag content] (assets/basic-auth-script)
+        source (str content)]
     (is (= :script tag))
     (is (re-find #"History\.prototype" source))
     (is (re-find #"toRelativeHistoryUrl" source))
     (is (not (re-find #"history-patch\.js" source)))))
 
 (deftest keyboard-chords-script-is-self-contained
-  (let [[tag source] (assets/keyboard-chords-script)]
+  (let [[tag content] (assets/keyboard-chords-script)
+        source (str content)]
     (is (= :script tag))
     (is (re-find #"DatastarKeyboardChords" source))
     (is (re-find #"modifierKeys" source))))
+
+;; @spec KIT-ASSETS-007
+(deftest inline-scripts-render-unescaped-under-hiccup-1-and-2
+  (let [h2 (requiring-resolve 'hiccup2.core/html)
+        h1 (requiring-resolve 'hiccup.core/html)
+        entity #"&amp;|&lt;|&gt;|&quot;|&apos;|&#"]
+    (doseq [[label element] {"Basic-Auth bootstrap" (assets/basic-auth-script)
+                             "keyboard chords" (assets/keyboard-chords-script)}
+            :let [js (str (second element))]]
+      (testing (str label " under Hiccup 2 (escapes strings by default)")
+        (let [html (str (eval (list h2 element)))]
+          (is (nil? (re-find entity html)))
+          (is (= (str "<script>" js "</script>") html))))
+      (testing (str label " under the Hiccup 1 API")
+        (let [html (str (eval (list h1 element)))]
+          (is (nil? (re-find entity html)))
+          (is (= (str "<script>" js "</script>") html)))))
+    (testing "the bootstrap really contains characters Hiccup 2 would escape"
+      (is (re-find #"&&|''" (str (second (assets/basic-auth-script))))))))
 
 (deftest script-tags-have-small-safe-default
   (is (= [[:script {:type "module" :src "/vendor/datastar-aliased.js"}]]
@@ -259,12 +279,12 @@
 ;; @spec KIT-ASSETS-005
 (deftest inline-scripts-have-no-comment-only-lines
   (testing "basic-auth-script"
-    (let [[_ source] (assets/basic-auth-script)]
+    (let [source (str (second (assets/basic-auth-script)))]
       (is (not-any? #(str/starts-with? (str/trim %) "//") (str/split-lines source)))
       (is (re-find #"__datastarAuthFixVersion" source))
       (is (re-find #"toRelativeHistoryUrl" source))))
   (testing "keyboard-chords-script"
-    (let [[_ source] (assets/keyboard-chords-script)]
+    (let [source (str (second (assets/keyboard-chords-script)))]
       (is (not-any? #(str/starts-with? (str/trim %) "//") (str/split-lines source)))
       (is (re-find #"DatastarKeyboardChords" source)))))
 

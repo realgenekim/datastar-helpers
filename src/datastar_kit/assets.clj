@@ -103,6 +103,21 @@
 (def ^:private keyboard-chords-source-stripped
   (strip-comment-lines keyboard-chords-source))
 
+;; @spec KIT-ASSETS-007
+(def ^:private raw-string
+  "hiccup.util/raw-string when Hiccup 2 is on the classpath, else nil. Hiccup 2 escapes
+   string content, which turns inline JavaScript into `u.username = &apos;&apos;`; Hiccup 1
+   does not escape and has no raw-string."
+  (delay (try (requiring-resolve 'hiccup.util/raw-string)
+              (catch Throwable _ nil))))
+
+(defn- inline-script
+  "A [:script ...] element whose JavaScript renders unescaped under Hiccup 1 and Hiccup 2.
+   The content is a Hiccup raw string when one can be made, else a plain string; (str content)
+   is the JavaScript either way."
+  [js]
+  [:script (if-let [raw @raw-string] (raw js) js)])
+
 (defn keyboard-chords-script
   "Return a self-contained script tag for the shared keyboard chord engine.
 
@@ -111,7 +126,7 @@
    Comment-only lines are stripped before emission (KIT-ASSETS-005); the copy
    audit always hashes the unstripped embedded text."
   []
-  [:script keyboard-chords-source-stripped])
+  (inline-script keyboard-chords-source-stripped))
 
 (def ^:private basic-auth-source
   (inline-resource "public/js/datastar-auth-fix.js"))
@@ -134,7 +149,7 @@
    are stripped before emission (KIT-ASSETS-005); the copy audit always hashes
    the unstripped embedded text."
   []
-  [:script basic-auth-source-stripped])
+  (inline-script basic-auth-source-stripped))
 
 (def ^:private datastar-aliased-source
   (inline-resource "public/vendor/datastar-aliased.js"))

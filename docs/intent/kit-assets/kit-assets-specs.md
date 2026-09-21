@@ -10,6 +10,7 @@ Design: `kit-assets-design.md`. "A kit asset" is a browser file the kit serves b
 - [x] **KIT-ASSETS-004**: If `datastar-kit.assets/asset-path` is called with a name that is not a kit asset, then it shall throw an exception naming the unknown asset.
 
 - [x] **KIT-ASSETS-006**: When more than one classpath root provides a kit asset's resource path at compile time, the namespace `datastar-kit.assets` shall embed the file that belongs to the kit (the provider under the same root as the namespace's own source), and if no such provider exists then compilation shall fail naming the path and the providers.
+- [x] **KIT-ASSETS-007**: When a page renders a kit inline script element with Hiccup 1 or with Hiccup 2, the JavaScript in the rendered HTML shall be byte-identical to the script the kit emitted, with no HTML entity escaping.
 - [x] **KIT-ASSETS-005**: When the kit emits an asset inline as a script element (the Basic-Auth bootstrap, the keyboard chord engine), it shall omit every line that contains only a JavaScript line comment.
 
 ## Serving
