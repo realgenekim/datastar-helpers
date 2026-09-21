@@ -65,10 +65,11 @@ Intent components:
 
 | Component | Owns |
 |---|---|
+| `kit-assets` | Embedding, addressing, and serving the browser files pages load by URL (the Datastar client, the kit runtime), so no app carries a copy. |
 | `basic-auth-bootstrap` | Making browser URL APIs (Request, fetch, History) work on a page opened from a URL with embedded Basic-Auth credentials, and delivering that script first on the page. |
 | `ds` | Signal helpers, persistent mounts, continuous controls, keydown builders, SSE event constructors. *(design not yet written)* |
 | `sse`, `sse-sdk` | Reliable broadcast and targeted push. *(design not yet written)* |
-| `assets` | Script-tag ordering and cache-busting hand-off. *(design not yet written)* |
+| `assets` | Script-tag ordering. *(design not yet written; URL selection is specified in `kit-assets`)* |
 | `keyboard-chords` | Two-key chord state machine. *(design not yet written)* |
 
 ## Key Design Decisions

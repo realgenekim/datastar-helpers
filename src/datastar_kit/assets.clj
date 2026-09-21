@@ -2,18 +2,56 @@
   "Ordered browser assets for Datastar applications.
 
    The Basic-Auth bootstrap MUST run before the Datastar module. Consumers pass
-   their own asset-url function so cache-busting remains owned by the app."
-  (:require
-   [clojure.java.io :as io]))
+   their own asset-url function so cache-busting remains owned by the app.
 
+   The kit also serves its own URL-loaded assets: the vendored Datastar client
+   and the kit runtime are embedded at compile time and served by
+   `wrap-kit-assets` at content-hashed URLs, so a consuming app has no file to
+   copy and no path to write."
+  (:require
+   [clojure.java.io :as io])
+  (:import
+   (java.security MessageDigest)))
+
+;; @spec KIT-ASSETS-001, KIT-ASSETS-002
+(defn chunk-text
+  "Split s into a vector of substrings, each at most 16000 chars, whose
+   concatenation equals s. 16000 chars * 3 bytes worst-case modified-UTF-8
+   stays under the JVM's 65,535-byte string-constant limit, so each chunk is
+   safe to emit as its own string literal.
+
+   Never splits a UTF-16 surrogate pair: if a chunk would end on a high
+   surrogate, it is extended by one char to include its low surrogate.
+
+   An empty string returns [\"\"]."
+  [^String s]
+  (let [len (count s)]
+    (if (zero? len)
+      [""]
+      (loop [start 0
+             chunks []]
+        (if (>= start len)
+          chunks
+          (let [end (min (+ start 16000) len)
+                end (if (and (< end len)
+                             (Character/isHighSurrogate (.charAt s (dec end))))
+                      (inc end)
+                      end)]
+            (recur end (conj chunks (subs s start end)))))))))
+
+;; @spec KIT-ASSETS-001, KIT-ASSETS-002
 (defmacro ^:private inline-resource
   "Embed a classpath resource while compiling this namespace. This deliberately
-   survives thin-JAR builds that AOT-compile git deps but omit their resource dirs."
+   survives thin-JAR builds that AOT-compile git deps but omit their resource dirs.
+
+   The resource text is emitted as several string-literal chunks (see
+   chunk-text) and joined at load, because a single asset can exceed the
+   JVM's 65,535-byte string-constant limit."
   [path]
   (let [resource (io/resource path)]
     (when-not resource
       (throw (ex-info "Missing datastar-kit classpath resource" {:path path})))
-    (slurp resource)))
+    `(str ~@(chunk-text (slurp resource)))))
 
 (def ^:private keyboard-chords-source
   (inline-resource "public/js/keyboard-chords.js"))
@@ -44,7 +82,78 @@
   []
   [:script basic-auth-source])
 
-;; @spec BASIC-AUTH-LOAD-003
+(def ^:private datastar-aliased-source
+  (inline-resource "public/vendor/datastar-aliased.js"))
+
+(def ^:private datastar-kit-runtime-source
+  (inline-resource "public/js/datastar-kit.js"))
+
+(defn- sha256-hex12
+  "The first 12 lowercase hex characters of the SHA-256 of bs."
+  [^bytes bs]
+  (let [digest (.digest (MessageDigest/getInstance "SHA-256") bs)]
+    (subs (apply str (map #(format "%02x" (bit-and (int %) 0xff)) digest)) 0 12)))
+
+(defn- embedded-asset [source]
+  (let [bs (.getBytes ^String source "UTF-8")]
+    {:bytes bs
+     :sha (sha256-hex12 bs)}))
+
+(def ^:private kit-assets
+  "Kit assets served by URL: name -> {:bytes <byte[] UTF-8> :sha <12-hex sha256>}."
+  {"datastar-aliased.js" (embedded-asset datastar-aliased-source)
+   "datastar-kit.js" (embedded-asset datastar-kit-runtime-source)})
+
+;; @spec KIT-ASSETS-003, KIT-ASSETS-004
+(defn asset-path
+  "Return the content-hashed URL for a kit asset: /_kit/<sha>/<name>. Throws
+   if name is not a known kit asset."
+  [asset-name]
+  (if-let [{:keys [sha]} (get kit-assets asset-name)]
+    (str "/_kit/" sha "/" asset-name)
+    (throw (ex-info "Unknown datastar-kit asset"
+                    {:asset asset-name :known (sort (keys kit-assets))}))))
+
+(defonce ^:private middleware-installed? (atom false))
+
+(def ^:private kit-asset-uri-re #"^/_kit/([^/]+)/([^/]+)$")
+
+(defn- kit-asset-response
+  "The response for a kit-asset request, or nil if this request is not one --
+   in which case the caller must delegate to the wrapped handler unchanged."
+  [request]
+  (when (contains? #{:get :head} (:request-method request))
+    (when-let [[_ hash asset-name] (re-matches kit-asset-uri-re (:uri request))]
+      (when-let [{asset-bytes :bytes :keys [sha]} (get kit-assets asset-name)]
+        {:status 200
+         :headers {"Content-Type" "text/javascript; charset=utf-8"
+                   "Cache-Control" (if (= hash sha)
+                                     "public, max-age=31536000, immutable"
+                                     "no-cache")
+                   "Content-Length" (str (alength ^bytes asset-bytes))}
+         :body (when (= :get (:request-method request))
+                 (java.io.ByteArrayInputStream. asset-bytes))}))))
+
+;; @spec KIT-ASSETS-010, KIT-ASSETS-011, KIT-ASSETS-012, KIT-ASSETS-013
+(defn wrap-kit-assets
+  "Ring middleware that serves the kit's own assets at their content-hashed
+   URLs (see asset-path). Supports both the 1-arity sync and 3-arity async
+   Ring handler shapes. Plain maps only -- no ring library dependency.
+
+   Marks the kit's middleware as installed in this process the moment it is
+   wrapped (not per request); script-tags reads that switch to decide whether
+   to emit kit URLs."
+  [handler]
+  (reset! middleware-installed? true)
+  (fn
+    ([request]
+     (or (kit-asset-response request) (handler request)))
+    ([request respond raise]
+     (if-let [response (kit-asset-response request)]
+       (respond response)
+       (handler request respond raise)))))
+
+;; @spec BASIC-AUTH-LOAD-003, KIT-ASSETS-020, KIT-ASSETS-021, KIT-ASSETS-022
 (defn script-tags
   "Return Datastar script tags in dependency order.
 
@@ -55,23 +164,38 @@
    - :kit-runtime?    include datastar-kit.js after Datastar (default false)
    - :datastar-path   override the vendored Datastar path
 
+   The Datastar module and kit runtime `src`s switch to the kit's own
+   content-hashed URLs (via asset-path, bypassing :asset-url) once
+   wrap-kit-assets has been installed in this process -- installing the
+   middleware is the single switch, so an app cannot emit kit URLs that
+   nothing serves. An explicit :datastar-path always overrides the module
+   path, whether or not the middleware is installed, and is always passed
+   through :asset-url.
+
    Example:
    (script-tags {:asset-url views/static :basic-auth? true :kit-runtime? true})"
   [{:keys [asset-url basic-auth? keyboard-chords? kit-runtime? datastar-path]
     :or {asset-url identity
          basic-auth? false
-         kit-runtime? false
-         datastar-path "/vendor/datastar-aliased.js"}}]
-  (seq
-   (cond-> []
-     basic-auth?
-     (conj (basic-auth-script))
+         kit-runtime? false}}]
+  (let [module-src (cond
+                     datastar-path (asset-url datastar-path)
+                     @middleware-installed? (asset-path "datastar-aliased.js")
+                     :else (asset-url "/vendor/datastar-aliased.js"))
+        runtime-src (when kit-runtime?
+                      (if @middleware-installed?
+                        (asset-path "datastar-kit.js")
+                        (asset-url "/js/datastar-kit.js")))]
+    (seq
+     (cond-> []
+       basic-auth?
+       (conj (basic-auth-script))
 
-     keyboard-chords?
-     (conj (keyboard-chords-script))
+       keyboard-chords?
+       (conj (keyboard-chords-script))
 
-     true
-     (conj [:script {:type "module" :src (asset-url datastar-path)}])
+       true
+       (conj [:script {:type "module" :src module-src}])
 
-     kit-runtime?
-     (conj [:script {:src (asset-url "/js/datastar-kit.js")}]))))
+       kit-runtime?
+       (conj [:script {:src runtime-src}])))))
