@@ -29,9 +29,17 @@ The server owns all state. The DOM is a display terminal. The client fires a POS
 | `src/datastar_kit/assets.clj` | `datastar-kit.assets` | Ordered Hiccup script tags with app-supplied cache-busting; embeds the Basic-Auth bootstrap and the keyboard chord engine so apps copy neither, and emits the bootstrap first. Also embeds and serves the vendored Datastar client and the kit runtime itself (`wrap-kit-assets`, `asset-path`), so apps don't need their own copies of those either. `(copy-audit)` catches a stale or shadowed app copy of any of these. |
 | `src/datastar_kit/testing.clj` | `datastar-kit.testing` | The consumer contract as `clojure.test`: `defcontract-tests` defines the copy-audit, shadowed-file, and (optional) authorized-JS checks in an app's own test namespace in one line. Also `command-replay`/`assert-command-replay`, the gesture contract for a fire-and-forget client. |
 | `resources/public/vendor/datastar-aliased.js` | — | The vendored Datastar client (use this, not a CDN). |
-| `resources/public/js/datastar-kit.js` | — | Small client runtime: `postJSON`, `showNotification`. |
+| `resources/public/js/datastar-kit.js` | — | Small client runtime: `postJSON`, `showNotification`, and **scroll keeping** — a server push does not move the element the user just clicked. |
 | `resources/public/js/datastar-auth-fix.js` | — | **HTTP Basic Auth bootstrap** — makes `Request`/`fetch` (Datastar `@get`/`@post`) and `history.pushState`/`replaceState` (htmx `hx-push-url`, Datastar) work on a page opened from a credentialed URL. See below. |
 | `resources/public/js/keyboard-chords.js` | — | Reusable two-key browser shortcut engine with shifted-key normalization, editable-field suppression, timeout, and lifecycle resets. |
+
+### Scroll stays put
+
+A server push is a whole new frame, so when it grows content *above* the viewport — an offer box on a row above the fold, a message bar at the top — everything below slides down and the row the user just clicked leaves the place they were looking at. Chrome's own scroll anchoring only partly recovers it (measured 2026-09-22 in a live tab: +288 px of new content above the fold, 100 px recovered, the clicked row moved from y≈520 to y≈784), and stable element ids do not help, because the morph is already in place by the time layout runs.
+
+`datastar-kit.js` fixes it, on by default, with no page cooperation. `postJSON` remembers which element the gesture came from — the focused control, or the last `pointerdown` target — and its top edge. After each applied frame (a `MutationObserver` on `document.body`, coalesced to one animation frame) the runtime puts that element's top edge back where it was, finding it again by `id` if the morph replaced the node. It refuses in the cases where a correction would be the page fighting the user: more than 2 s after the gesture, or after any `wheel`, `touchmove`, or scrolling key press. Opt a page or a subtree out with `data-kit-keep-scroll="off"`.
+
+Intent and specs: `docs/intent/kit-runtime/` (`KIT-RUNTIME-SCROLL-001`…`012`).
 
 ### Browser-owned keyboard chords
 
@@ -68,6 +76,7 @@ The consumer provides `org.httpkit`, `taoensso.timbre`, and (for the SDK flavor)
 
 These are the things you'll otherwise rediscover the hard way. The library exists so you don't.
 
+- **A push moves what the user is looking at, and scroll anchoring will not save you.** Content that grows above the viewport pushes the clicked row down the screen; the browser recovers only part of it, and ids on the rows change nothing. Scroll is browser-owned state the server cannot see — the kit runtime keeps it (see "Scroll stays put"), so don't try to solve it server-side with a scroll signal or a `scrollIntoView` in the pushed HTML.
 - **Signal arithmetic is camelCase-parsed.** Datastar reads `$idx-1` as the signal `$idx1`, *not* `$idx − 1`. Always parenthesize. `signal-inc`/`signal-dec` do it for you.
 - **`data-star-bind` with a `true` value kills the whole page.** Hiccup renders `{:data-star-bind:foo true}` as `true`, which throws and halts *all* Datastar processing downstream. Use `(ds/bind :foo)` → it emits `""`.
 - **SSE event names were renamed and old ones are silently ignored.** The aliased build wants `datastar-patch-elements` / `data: elements` / `data: mode`, not the old `merge-fragments`/`fragments`/`mergeMode`. Hand-written events with the old names do *nothing*, with no error. The `sse-*` constructors are the single source of truth for the names and **fail fast** (spec) on bad data.

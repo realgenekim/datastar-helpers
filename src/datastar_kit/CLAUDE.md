@@ -10,7 +10,7 @@ Portable, project-agnostic helpers for Clojure + Datastar + SSE applications.
 | `sse.clj` | Reliable SSE broadcast, raw-channel flavor (`ds/sse-event` strings): off-thread push, heartbeat, reaping |
 | `sse_sdk.clj` | Same reliability, **SDK flavor** (`hk/->sse-response` + `patch-elements!`): broadcast `push!`, targeted `push-to!`, `sse-response` with per-connection `on-connect` |
 | `assets.clj` | Ordered Datastar/Auth/runtime script tags with consumer-provided cache-busting |
-| `resources/public/js/datastar-kit.js` | Runtime JS: `postJSON()`, `showNotification()` |
+| `resources/public/js/datastar-kit.js` | Runtime JS: `postJSON()`, `showNotification()`, and gesture-anchored scroll keeping (a push does not move the element the user just clicked; opt out with `data-kit-keep-scroll="off"`) |
 | `resources/public/js/datastar-auth-fix.js` | HTTP Basic Auth fix: makes `fetch()`-based `@get`/`@post` work behind credentialed URLs; load BEFORE the Datastar module |
 | `resources/public/vendor/datastar-aliased.js` | Vendored Datastar (CDN returns 404) |
 
