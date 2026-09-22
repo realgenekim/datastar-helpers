@@ -1,7 +1,7 @@
 (ns datastar-kit.testing-test
   (:require
-   [clojure.edn :as edn]
    [clojure.java.io :as io]
+   [clojure.string :as str]
    [clojure.test :refer [deftest is testing]]
    [datastar-kit.assets :as assets]
    [datastar-kit.test-helpers :as th]
@@ -155,3 +155,77 @@
     (is (:test (get vars 'kit-contract-no-shadowed-public-files)))
     (is (contains? vars 'kit-contract-only-authorized-js))
     (is (:test (get vars 'kit-contract-only-authorized-js)))))
+
+;; ---- EDIT-030..EDIT-032: command replay ----
+
+(defn- note-store
+  "A tiny stand-in for a server that commits ONE note per command id and
+   appends one durable line per commit."
+  []
+  {:state (atom {}) :log (atom []) :ids (atom 0)})
+
+;; @spec EDIT-030
+(deftest command-replay-passes-a-handler-that-commits-a-command-once
+  (let [{:keys [state log]} (note-store)
+        post! (fn []
+                (when-not (contains? @state "cmd-1")
+                  (swap! state assoc "cmd-1" {:text "Portland"})
+                  (swap! log conj "committed cmd-1")))
+        result (kit/command-replay {:post! post!
+                                    :state #(deref state)
+                                    :effects #(count @log)})]
+    (is (true? (:replay-safe? result)))
+    (is (= {} (:state-diff result)))
+    (is (nil? (:effects-diff result)))))
+
+;; @spec EDIT-030, EDIT-031
+(deftest command-replay-catches-a-duplicate-durable-write-state-alone-would-miss
+  (let [{:keys [state log]} (note-store)
+        post! (fn []
+                (swap! state assoc "cmd-1" {:text "Portland"})   ; same value twice
+                (swap! log conj "committed cmd-1"))              ; but a SECOND line
+        result (kit/command-replay {:post! post!
+                                    :state #(deref state)
+                                    :effects #(count @log)})]
+    (testing "the projection is identical — only the effects count tells the truth"
+      (is (= {} (:state-diff result))))
+    (is (false? (:replay-safe? result)))
+    (is (= {:after-first 1 :after-second 2} (:effects-diff result)))
+    (is (str/includes? (kit/replay-failure-message result) ":effects"))))
+
+;; @spec EDIT-030
+(deftest command-replay-names-the-key-a-new-id-changes
+  (let [{:keys [state ids]} (note-store)
+        post! (fn [] (swap! state assoc :last-id (swap! ids inc)))
+        result (kit/command-replay {:post! post! :state #(deref state)})]
+    (is (false? (:replay-safe? result)))
+    (is (= [:last-id] (keys (:state-diff result))))
+    (is (= {:after-first 1 :after-second 2} (:last-id (:state-diff result))))
+    (testing "the message names the key, not the whole state"
+      (is (str/includes? (kit/replay-failure-message result) ":last-id"))
+      (is (str/includes? (kit/replay-failure-message result) ":state")))))
+
+;; @spec EDIT-030
+(deftest command-replay-without-an-effects-fn-checks-state-only
+  (let [{:keys [state]} (note-store)
+        result (kit/command-replay {:post! #(swap! state assoc :k 1) :state #(deref state)})]
+    (is (true? (:replay-safe? result)))
+    (is (nil? (:effects-diff result)))))
+
+;; @spec EDIT-032
+(deftest assert-command-replay-passes-a-replay-safe-command
+  (let [state (atom {})]
+    (kit/assert-command-replay {:post! #(swap! state assoc :k 1) :state #(deref state)})))
+
+;; @spec EDIT-032
+(deftest assert-command-replay-fails-naming-what-the-replay-changed
+  (let [reports (atom [])
+        log (atom [])
+        state (atom {})]
+    (binding [clojure.test/report #(swap! reports conj %)]
+      (kit/assert-command-replay {:post! (fn [] (swap! state assoc :k 1) (swap! log conj :line))
+                                  :state #(deref state)
+                                  :effects #(count @log)}))
+    (is (= 1 (count @reports)))
+    (is (= :fail (:type (first @reports))))
+    (is (str/includes? (:message (first @reports)) ":effects"))))

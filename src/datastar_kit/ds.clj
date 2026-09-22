@@ -10,7 +10,8 @@
    - Keyboard builders: on-key, on-alt, on-meta, on-ctrl, guard-input, keydown-expr
    - Payload & values: JsExpr, js, js-val, js-payload, $value, $checked, $key, $text
    - Server actions: post-action*, click-action, fetch-then-reload, fetch-swap
-   - Binding: bind (prevents the true vs \"\" Datastar bug)
+   - Binding: bind, signal-ref (one kebab-case name, both spellings)
+   - Browser-owned text: editable (the one open input inside a pushed region)
    - URL: replace-url (server-owned location bar via the replaceUrl plugin)
    - Clipboard: copy-nearest-text, copy-text, copy-text-js
    - Focus/scroll: js-focus-element, js-scroll-into-view
@@ -141,14 +142,51 @@
 ;; Datastar bind helper — prevents the `true` value attribute bug
 ;; ---------------------------------------------------------------------------
 
+(defn- kebab-signal
+  "Return the signal's name, or throw when it carries an uppercase letter.
+
+   HTML attribute names are ASCII-lowercased by the parser, so
+   `data-star-bind:noteText` reaches Datastar as `data-star-bind:notetext` and
+   binds the signal `notetext`. An expression elsewhere reading `$noteText`
+   then reads a DIFFERENT, always-empty signal: every submit arrives blank,
+   with no error anywhere. One kebab-case name plus `signal-ref` is the only
+   spelling an app writes; the two forms are derived, never hand-typed."
+  [signal-name]
+  (let [nm (name signal-name)]
+    (when (re-find #"[A-Z]" nm)
+      (throw (ex-info
+              (str "signal " (pr-str nm) " has an uppercase letter. The browser lowercases "
+                   "attribute names, so data-star-bind:" nm " binds \"" (str/lower-case nm)
+                   "\", not \"" nm "\" — and every expression reading $" nm " sees an empty "
+                   "signal, silently. Name the signal in kebab-case (:note-text) and read it "
+                   "with (ds/signal-ref :note-text) => \"$noteText\".")
+              {:type :ds/camel-case-signal :signal nm})))
+    nm))
+
+(defn signal-ref
+  "The expression spelling of a kebab-case signal name, using Datastar's own
+   camelCase rule (`-` followed by a lowercase letter upcases that letter).
+   Pair it with `bind` so ONE name yields both spellings and neither is typed
+   by hand — the mismatch between them is invisible at runtime.
+     (signal-ref :note-text) => \"$noteText\"
+     (signal-ref :chat)      => \"$chat\""
+  [signal-name]
+  (let [nm (kebab-signal signal-name)]
+    (str "$" (str/replace nm #"-[a-z]" #(str/upper-case (subs % 1))))))
+
 (defn bind
   "Return a Hiccup attribute map for data-star-bind on a signal name.
    Prevents the `true` vs `\"\"` Datastar bug — raw {:data-star-bind:foo true}
    renders `true` as the attribute value, which kills ALL Datastar processing
    on the page. This helper uses \"\" which Datastar interprets correctly.
+
+   Refuses an uppercase letter in the name (`:ds/camel-case-signal`): the
+   browser lowercases attribute names, so a camelCase bind and a `$camelCase`
+   read silently address two different signals. Use kebab-case plus
+   `signal-ref`.
    Usage: (merge {:id \"chat-input\"} (ds/bind :chat-msg))"
   [signal-name]
-  {(keyword (str "data-star-bind:" (name signal-name))) ""})
+  {(keyword (str "data-star-bind:" (kebab-signal signal-name))) ""})
 
 ;; ---------------------------------------------------------------------------
 ;; Raw JS expressions — tagged type for safe payload generation
@@ -211,6 +249,138 @@
    => postJSON('/api/chat',{'message':m.value.trim()}).catch(e=>console.error(e))"
   [url payload-map]
   (str "postJSON('" url "',{" (js-payload payload-map) "}).catch(e=>console.error(e))"))
+
+;; ---------------------------------------------------------------------------
+;; editable — THE one open text input inside a server-pushed region
+;; ---------------------------------------------------------------------------
+
+(def ^:private editable-draft-js
+  "The browser-owned draft, read out of the DOM at gesture time. `this` is the
+   element carrying the inline handler, so this works from a button and from
+   the input itself."
+  (->JsExpr "this.closest('.ds-editable').querySelector('input').value"))
+
+(defn- editable-action-js
+  "The postJSON call one editable gesture makes: the server's own literal
+   payload, the edit session's command id when there is one, and the draft read
+   out of the DOM at click time."
+  [{:keys [url payload]} command-id]
+  (post-action* url (cond-> (or payload {})
+                      command-id (assoc :command-id command-id)
+                      :always (assoc :text editable-draft-js))))
+
+(defn- editable-cancel-js
+  "The postJSON call that closes the editor. It carries no draft — cancel
+   discards it — so its body is the command id or nothing at all."
+  [{:keys [url]} command-id]
+  (post-action* url (cond-> {} command-id (assoc :command-id command-id))))
+
+(defn- editable-gesture
+  "A gesture handler for an inline `onclick`: post, then contain the click.
+   `return false` keeps a stray default out of an ancestor form."
+  [js]
+  (str js ";event.stopPropagation();return false"))
+
+(defn- editable-keydown-js
+  "Enter submits the FIRST action, Escape cancels, and every keystroke stops
+   there. The leading stopPropagation is the point: a page-level
+   `data-star-on:keydown__window` map listens on the window, so without it the
+   page's own j/k/Escape bindings fire while the user is typing.
+
+   `keydown-expr`/`on-key` deliberately do NOT fit here — they are built for a
+   page-level Datastar keymap: they speak `evt` (this element speaks `event`,
+   the one idiom inside an editable) and `guard-input` exists to SKIP a text
+   input, which is exactly the element we are on."
+  [actions cancel command-id]
+  (str "event.stopPropagation();"
+       (when-let [a (first actions)]
+         (str "if(event.key==='Enter'){event.preventDefault();"
+              (editable-action-js a command-id) "}"))
+       (when cancel
+         (str "if(event.key==='Escape'){event.preventDefault();"
+              (editable-cancel-js cancel command-id) "}"))))
+
+(defn editable
+  "Hiccup for THE one open text input inside a server-pushed region, plus its
+   action buttons. The server owns committed state; the browser owns the active
+   draft, focus, selection, composition and undo. This is the one element in a
+   server-is-the-game-loop page where that second half is true, so the kit owns
+   it rather than leaving each app to rediscover the three ways it breaks.
+
+   Options
+     :actions     [{:label \"begins here\" :url \"/r/1/note/submit\"
+                    :payload {:tx-id \"t1\" :date \"2026-09-01\" :kind \"begins\"}} ...]
+     :cancel      {:label \"cancel\" :url \"/r/1/note/cancel\"} — optional
+     :command-id  a server-minted id for THIS edit session, stamped on every
+                  gesture — optional
+     :value       the existing text, when editing an existing item
+     :placeholder :class :autofocus?  (autofocus? defaults true)
+
+   Open and close
+     Render it to open; render NOTHING to close. `data-star-ignore-morph` (the
+     aliased spelling this kit's pinned client reads) makes a later push skip
+     this subtree entirely as long as both the old and the incoming element
+     carry it — so the server never has to add \"freeze the region while typing\"
+     logic of its own. That hand-rolled freeze is the first bug this prevents:
+     it also froze the render that OPENS the input.
+
+   Why no signal
+     The draft is NOT a Datastar signal. A bind of `:noteText` becomes
+     `data-star-bind:notetext` in the parser while the submit expression reads
+     `$noteText`, and every submit arrives blank with no error. Each gesture
+     reads its sibling input at click time instead:
+     `this.closest('.ds-editable').querySelector('input').value`. The wrapper
+     class is therefore part of the contract, not decoration.
+
+   Why plain onclick everywhere
+     One event idiom inside the editor — `event` and `this`, never Datastar's
+     `evt` — so no handler here can be read in the wrong dialect. Every gesture,
+     and the wrapper itself, calls `event.stopPropagation()`: these controls sit
+     inside a cell whose own onclick OPENS the editor, and without it one click
+     sends the submit AND a racing open.
+
+   Payload discipline
+     `:payload` values are the SERVER's, rendered as literals. Never put
+     `evt`/cursor/selection state in them: the click may land after focus has
+     moved, and the gesture would then act on the wrong row. `:text` is the one
+     key the kit adds, and its name is fixed.
+
+   Replay
+     A fire-and-forget client can always turn one click into two POSTs
+     (bubbling, a double tap, a retry). Give the edit session a `:command-id`
+     and make the endpoint commit that id once; prove it with
+     `datastar-kit.testing/assert-command-replay`."
+  [{:keys [placeholder value actions cancel class autofocus? command-id]
+    :or {autofocus? true}}]
+  (doseq [{:keys [url label]} actions]
+    (assert (and (string? url) (not (str/blank? url)))
+            "editable :actions entry needs a :url")
+    (assert (and (string? label) (not (str/blank? label)))
+            "editable :actions entry needs a :label"))
+  (assert (or (nil? cancel) (and (string? (:url cancel)) (not (str/blank? (:url cancel)))))
+          "editable :cancel needs a :url")
+  ;; NOTE: the `.ds-editable` in this tag and in `editable-draft-js` are one
+  ;; contract — a gesture finds its input through that class. Change both.
+  [:div.ds-editable
+   (cond-> {:data-star-ignore-morph ""
+            :onclick "event.stopPropagation()"}
+     class (assoc :class class))
+   [:input (cond-> {:type "text"
+                    :class "ds-editable-input"
+                    :onkeydown (editable-keydown-js actions cancel command-id)}
+             placeholder (assoc :placeholder placeholder)
+             (some? value) (assoc :value value)
+             autofocus? (assoc :autofocus true))]
+   (into [:div.ds-editable-actions]
+         (concat
+          (for [{:keys [label] :as action} actions]
+            [:button {:type "button"
+                      :onclick (editable-gesture (editable-action-js action command-id))}
+             label])
+          (when cancel
+            [[:button {:type "button"
+                       :onclick (editable-gesture (editable-cancel-js cancel command-id))}
+              (or (:label cancel) "cancel")]])))])
 
 (defn replace-url
   "Hiccup attribute map for data-star-replace-url (Datastar's replaceUrl plugin).

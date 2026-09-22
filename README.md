@@ -23,11 +23,11 @@ The server owns all state. The DOM is a display terminal. The client fires a POS
 
 | File | Namespace / asset | What it gives you |
 |---|---|---|
-| `src/datastar_kit/ds.clj` | `datastar-kit.ds` | Signal helpers, safe persistent mounts (`sse-mount-url`), continuous one-shot controls (`live-scrub`), keydown builders, `bind`, `post-action*`, clipboard/scroll helpers, and **spec-validated SSE event constructors**. |
+| `src/datastar_kit/ds.clj` | `datastar-kit.ds` | Signal helpers, safe persistent mounts (`sse-mount-url`), continuous one-shot controls (`live-scrub`), the one browser-owned text input (`editable`), keydown builders, `bind`/`signal-ref`, `post-action*`, clipboard/scroll helpers, and **spec-validated SSE event constructors**. |
 | `src/datastar_kit/sse.clj` | `datastar-kit.sse` | **Reliable SSE broadcast (raw-channel flavor)** for apps that write raw SSE strings: subscriber set, off-thread push agent, heartbeat, dead-connection reaping. |
 | `src/datastar_kit/sse_sdk.clj` | `datastar-kit.sse-sdk` | **Same reliability, SDK flavor** — for apps using the Datastar Clojure SDK (`hk/->sse-response` + a `sse-gen` + `patch-elements!`): off-thread broadcast or targeted `push!`/`push-to!`, idempotent heartbeat, reaping, and an `sse-response` helper with a per-connection `on-connect` hook. |
 | `src/datastar_kit/assets.clj` | `datastar-kit.assets` | Ordered Hiccup script tags with app-supplied cache-busting; embeds the Basic-Auth bootstrap and the keyboard chord engine so apps copy neither, and emits the bootstrap first. Also embeds and serves the vendored Datastar client and the kit runtime itself (`wrap-kit-assets`, `asset-path`), so apps don't need their own copies of those either. `(copy-audit)` catches a stale or shadowed app copy of any of these. |
-| `src/datastar_kit/testing.clj` | `datastar-kit.testing` | The consumer contract as `clojure.test`: `defcontract-tests` defines the copy-audit, shadowed-file, and (optional) authorized-JS checks in an app's own test namespace in one line. |
+| `src/datastar_kit/testing.clj` | `datastar-kit.testing` | The consumer contract as `clojure.test`: `defcontract-tests` defines the copy-audit, shadowed-file, and (optional) authorized-JS checks in an app's own test namespace in one line. Also `command-replay`/`assert-command-replay`, the gesture contract for a fire-and-forget client. |
 | `resources/public/vendor/datastar-aliased.js` | — | The vendored Datastar client (use this, not a CDN). |
 | `resources/public/js/datastar-kit.js` | — | Small client runtime: `postJSON`, `showNotification`. |
 | `resources/public/js/datastar-auth-fix.js` | — | **HTTP Basic Auth bootstrap** — makes `Request`/`fetch` (Datastar `@get`/`@post`) and `history.pushState`/`replaceState` (htmx `hx-push-url`, Datastar) work on a page opened from a credentialed URL. See below. |
@@ -90,6 +90,42 @@ These are the things you'll otherwise rediscover the hard way. The library exist
   `datastar-auth-fix.js` is the one owner of this failure class. It idempotently wraps `window.Request` (via Proxy), `fetch`, and both History methods; it installs **unconditionally, with no load-time probe** (a probe exercises one call shape; callers use others), and it is a no-op on a page without credentials. A History `SecurityError` becomes a console warning, never an exception in the caller.
 
   Use `(datastar-kit.assets/basic-auth-script)`, or `(datastar-kit.assets/script-tags {:asset-url views/static :basic-auth? true})`. Both embed the script at compile time, so thin-JAR builds need no copy. **It must be the first script on the page** — before htmx, Datastar, and anything else that touches History, Request, or fetch. **Do not keep an app-local copy of `datastar-auth-fix.js` or a separate History shim**; a second owner is how this class regressed. Intent and specs: `docs/intent/basic-auth-bootstrap/`.
+- **The one place the browser owns state is a text input — use `ds/editable`, don't hand-roll it.** The server owns committed state; **the browser owns the active draft, focus, selection, composition and undo**. A caret, an IME buffer and an undo stack exist nowhere on the server, and no push can restore them. One app hand-rolled this and hit three bugs on one feature: its own "freeze the region while typing" logic also froze the render that *opens* the input; the action buttons bubbled their click into the cell's own `onclick`, so one click sent the submit **and** a racing open; and `(ds/bind :noteText)` rendered `data-star-bind:noteText`, which the HTML parser lowercases to `notetext`, while the submit read `$noteText` — every submit arrived blank, silently.
+
+  ```clojure
+  (when (:open? note)
+    (ds/editable
+      {:placeholder "a trip label, or a note"
+       :value       (:text note)                      ; editing an existing note
+       :command-id  (:edit-id note)                   ; server-minted, one per edit session
+       :actions     [{:label "begins here" :url "/r/1/note/submit"
+                      :payload {:tx-id (:id r) :date (:date r) :kind "begins"}}
+                     {:label "ends here"   :url "/r/1/note/submit"
+                      :payload {:tx-id (:id r) :date (:date r) :kind "ends"}}
+                     {:label "just a note" :url "/r/1/note/submit"
+                      :payload {:tx-id (:id r) :date (:date r) :kind "note"}}]
+       :cancel      {:label "cancel" :url "/r/1/note/cancel"}}))
+  ```
+
+  **Open by rendering it; close by rendering nothing.** The wrapper carries `data-star-ignore-morph` — the aliased spelling the pinned client actually reads — so a later push of the surrounding region skips the subtree and leaves the caret and the half-typed draft alone. Stop rendering it and the surrounding morph removes it. There is no freeze logic to get wrong.
+
+  **The draft is not a signal.** Every gesture reads its sibling input at click time (`this.closest('.ds-editable').querySelector('input').value`), which removes the camelCase mismatch as a class. The `text` key is fixed; `:payload` values are the **server's**, rendered as literals — never `evt`/cursor state, because the click can land after focus has moved and the gesture would act on the wrong row. Every button is a plain `type="button"` `onclick` (one event idiom: `event` and `this`, never Datastar's `evt`), each stopping propagation, and so does the wrapper itself. Enter submits the first action; Escape cancels; the input's keydown stops propagation so a page-level `keydown__window` map doesn't also see the typing. Intent and specs: `docs/intent/editable/`.
+- **Name signals in kebab-case and derive both spellings.** The HTML parser lowercases attribute names, so `data-star-bind:noteText` binds `notetext` while `$noteText` reads an always-empty signal, with no error anywhere. `(ds/bind :note-text)` emits the attribute and `(ds/signal-ref :note-text)` returns `"$noteText"` (Datastar's own camelCase rule) — one name, both spellings, neither hand-typed. `bind` and `signal-ref` now **refuse** an uppercase letter (`ex-info`, `:type :ds/camel-case-signal`) rather than letting the mismatch reach the browser.
+- **Gesture endpoints need command replay, not blanket idempotence.** A fire-and-forget client can always turn one click into two POSTs — a bubbled click, a double tap, a retry after a dropped response. "Every endpoint must be idempotent" is the wrong rule: move-down and undo are legitimately repeatable. The rule that holds is **a replay of one command has one effect; a new command carries a new id** — hence `editable`'s `:command-id`. Prove it from the outside:
+
+  ```clojure
+  (ns my-app.note-test
+    (:require [clojure.test :refer [deftest]]
+              [datastar-kit.testing :as kit]))
+
+  (deftest submitting-a-note-twice-commits-once
+    (kit/assert-command-replay
+      {:post!   #(app/handler (submit-request {:command-id "cmd-7" :text "Portland"}))
+       :state   #(select-keys @app/db [:notes])
+       :effects #(count @app/event-log)}))
+  ```
+
+  It sends the same body twice and reports `:replay-safe?`, `:state-diff` (differing keys only — never the whole state) and `:effects-diff`. **The `:effects` count is not optional in spirit:** a handler that appends a second durable row while writing the same projection value is invisible to state equality, and that duplicate write is the bug most worth catching.
 - **Match selection state to the workflow.** Server-authoritative selection (toggle → SSE morph) is great for single highlights; for *multi-select-then-batch-act*, a client-side `Set` is the right tool (0 ms local toggles vs a round-trip per click). Server-authoritative ≠ always better.
 - **Thin-JAR builds leave the kit's resources behind, so apps copied them — and the copies drifted.** A git dependency's compiled namespaces land in a thin-JAR/container image, but its `resources/` dir does not, so a runtime `io/resource` read for the vendored Datastar client or the kit runtime returns nothing there; in dev, a stale local copy on the classpath precedes the kit's file and hides the drift entirely. Fix: call `(datastar-kit.assets/wrap-kit-assets handler)` once in the app's handler chain — `script-tags` then emits `/_kit/<hash>/…` URLs for both files automatically — and delete the app's own copies of `vendor/datastar-aliased.js` and `js/datastar-kit.js`. The hashed URL is cacheable forever (`immutable`) and changes exactly when the bytes do. Intent and specs: `docs/intent/kit-assets/`.
 - **An app's `resources/` silently shadows the kit's files — so the kit audits for copies.** An app's `resources/` precedes its dependencies on the classpath, so an app-local copy of a kit asset wins over the kit's own file at the same path with no signal — a stale Datastar client was served for weeks this way, with every repo check green. `(datastar-kit.assets/copy-audit)` inspects every classpath provider of each kit asset and returns `:shadowed`/`:stale-copy` findings as data; `script-tags` runs it once per process and warns on standard error for free, no adoption needed. To make it fail a test run instead, adopt the contract in one line:

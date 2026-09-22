@@ -142,3 +142,102 @@
                               (str "manifest entries in " ~js-manifest " with no file: " (pr-str (:missing result#))))
              (clojure.test/is (empty? (:bad-pins result#))
                               (str "bad third-party pins in " ~js-manifest ": " (pr-str (:bad-pins result#)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Command replay — the gesture contract for a fire-and-forget client
+;;
+;; A fire-and-forget client can always turn one click into two POSTs: a handler
+;; that bubbles into an ancestor's own handler, a double tap, a retry after a
+;; dropped response. "Every endpoint must be idempotent" is the wrong rule —
+;; move-down and undo are legitimately repeatable. The rule that holds is:
+;;
+;;   a REPLAY of one command (the same command id) has ONE effect;
+;;   a NEW command carries a NEW id.
+;;
+;; State equality alone cannot prove that. A handler that appends a second
+;; durable line while writing the same projection value looks identical through
+;; an atom deref, so `command-replay` also reads a caller-chosen effects count.
+;; ---------------------------------------------------------------------------
+
+(defn- diff-by-key
+  "The keys whose value differs between two states, as
+   {k {:after-first x :after-second y}} in a stable order. Only differing keys
+   appear — a state is a projection and may be large. Non-map states compare
+   whole, under the key :value."
+  [a b]
+  (if (and (map? a) (map? b))
+    (into (array-map)
+          (for [k (sort-by pr-str (distinct (concat (keys a) (keys b))))
+                :let [x (get a k ::absent)
+                      y (get b k ::absent)]
+                :when (not= x y)]
+            [k {:after-first x :after-second y}]))
+    (if (= a b) {} {:value {:after-first a :after-second b}})))
+
+;; @spec EDIT-030, EDIT-031
+(defn command-replay
+  "Send the SAME command twice and report what the second one changed.
+
+   Options
+     :post!    0-arity fn performing ONE POST with a FIXED body — the same
+               command id both times. Called twice.
+     :state    0-arity fn returning the server's own state for this command: an
+               atom deref, or better a projection narrowed to what the command
+               touches. Read after each post.
+     :effects  0-arity fn returning something COUNTABLE the caller chooses —
+               appended event count, log lines, rows written. Optional, but a
+               duplicate durable write is invisible to :state alone: writing the
+               same value twice leaves an identical projection.
+
+   Returns
+     {:replay-safe?  true when neither state nor effects moved on the replay
+      :state-diff    differing keys only, {} when none
+      :effects-diff  {:after-first x :after-second y}, or nil when unchanged
+                     or when no :effects fn was given}
+
+   A false :replay-safe? means the endpoint treats a repeat as a second
+   command. Give the gesture a server-minted command id and commit that id
+   once."
+  [{:keys [post! state effects]}]
+  (post!)
+  (let [state-1 (when state (state))
+        effects-1 (when effects (effects))
+        _ (post!)
+        state-2 (when state (state))
+        effects-2 (when effects (effects))
+        state-diff (diff-by-key state-1 state-2)
+        effects-diff (when (and effects (not= effects-1 effects-2))
+                       {:after-first effects-1 :after-second effects-2})]
+    {:replay-safe? (and (empty? state-diff) (nil? effects-diff))
+     :state-diff state-diff
+     :effects-diff effects-diff}))
+
+;; @spec EDIT-031
+(defn replay-failure-message
+  "The failure text for a `command-replay` result: what the replay moved, named
+   under :state and :effects, and nothing that did not move. Never the whole
+   state — a projection can be large, and the differing keys are the finding."
+  [{:keys [state-diff effects-diff]}]
+  (str "replaying the same command changed "
+       (pr-str (cond-> {}
+                 (seq state-diff) (assoc :state state-diff)
+                 (some? effects-diff) (assoc :effects effects-diff)))
+       " — a replay of one command must have ONE effect; a NEW command needs a NEW command id."))
+
+;; @spec EDIT-032
+(defmacro assert-command-replay
+  "`command-replay` as one clojure.test assertion. Takes the same options map
+   and returns the result, so a test can assert further on the diff.
+
+   Expands with fully qualified symbols, so the caller needs no requires beyond
+   datastar-kit.testing.
+
+   (datastar-kit.testing/assert-command-replay
+     {:post!   #(handler (submit-request \"cmd-7\"))
+      :state   #(select-keys @db [:notes])
+      :effects #(count @event-log)})"
+  [opts]
+  `(let [result# (datastar-kit.testing/command-replay ~opts)]
+     (clojure.test/is (:replay-safe? result#)
+                      (datastar-kit.testing/replay-failure-message result#))
+     result#))

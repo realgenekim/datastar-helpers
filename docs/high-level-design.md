@@ -69,6 +69,7 @@ Intent components:
 | `kit-assets` | Embedding, addressing, and serving the browser files pages load by URL (the Datastar client, the kit runtime), so no app carries a copy. |
 | `kit-runtime` | The browser globals that `ds`-generated expressions call (`postJSON`, `showNotification`), and the rule that nothing else lives in that file. |
 | `basic-auth-bootstrap` | Making browser URL APIs (Request, fetch, History) work on a page opened from a URL with embedded Basic-Auth credentials, and delivering that script first on the page. |
+| `editable` | The one place the browser owns state: the open text input inside a server-pushed region, its gestures, and the command-replay contract the endpoints behind it must meet. |
 | `ds` | Signal helpers, persistent mounts, continuous controls, keydown builders, SSE event constructors. *(design not yet written)* |
 | `sse`, `sse-sdk` | Reliable broadcast and targeted push. *(design not yet written)* |
 | `assets` | Script-tag ordering. *(design not yet written; URL selection is specified in `kit-assets`)* |
@@ -77,6 +78,7 @@ Intent components:
 ## Key Design Decisions
 
 - **Browser assets are embedded at compile time, not served from the dependency's resource directory.** Thin-JAR and container builds AOT-compile git dependencies and omit their resource directories, so a `src=` tag pointing at a kit asset 404s in production unless the app copies the file. Embedding removes the copy. Alternative considered: document a copy step per app; rejected because copies drift.
+- **The server owns committed state; the browser owns the active draft, focus, selection, composition and undo.** A caret, an IME composition buffer, a selection and an undo stack exist nowhere on the server and no push can restore them, so the one element that holds them is a kit primitive (`editable`) rather than a warning each app re-implements. Alternative considered: keep server-authoritative rendering everywhere and freeze the region while the user types; rejected because the freeze is app state with its own failure modes — the app that wrote it also froze the render that opens the input.
 - **Consumers use `:local/root` in dev and a pinned git SHA in CI/deploy.** Instant local edits without giving up hermetic builds. The cost is that dev and prod diverge until the SHA is bumped; the README states the vigilance rule.
 
 ## Success Metrics
