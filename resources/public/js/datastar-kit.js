@@ -193,12 +193,14 @@ function _kitRestoreScroll() {
   window.scrollBy(0, decision.by);
 }
 
+// @spec KIT-RUNTIME-SCROLL-025
 function _kitScheduleRestore() {
   if (_kitRestorePending) { return; }
   _kitRestorePending = true;
   requestAnimationFrame(function () {
     _kitRestorePending = false;
     _kitRestoreScroll();
+    _kitRestoreScrollIntoView();
   });
 }
 
@@ -211,6 +213,81 @@ function _kitOnKeyDown(e) {
   if (target && target.tagName && _KIT_GESTURE_TAGS[target.tagName]) { return; }
   if (target && target.isContentEditable) { return; }
   _kitLastUserScrollAt = _kitNow();
+}
+
+// ---------------------------------------------------------------------------
+// Scroll into view — the cursor row
+//
+// The server marks ONE element per page with `data-kit-scroll-into-view=""`
+// -- the cursor row it just moved. After each applied frame (the same
+// MutationObserver -> one animation frame hook scroll-keep uses above), if
+// that element exists and is not fully inside the viewport, the runtime
+// calls `el.scrollIntoView({block:'nearest'})` -- instant, not smooth, like
+// vim. Fully visible: nothing happens, so there is no jitter.
+//
+// An optional `data-kit-scroll-margin="<px>"` on the marked element or on
+// `<html>` narrows the top of the viewport for this check -- a page with a
+// sticky header sets it to the header's height, so a row tucked just under
+// the header still counts as off-screen.
+//
+// This composes with gesture-anchored scroll keeping above: in the same
+// frame, scroll-into-view runs AFTER the scroll-keep correction and wins --
+// the user asked for the cursor. It has its own opt-out,
+// `data-kit-scroll-into-view="off"` on `<html>`; the `data-kit-keep-scroll`
+// opt-out is unrelated and does not affect this feature.
+//
+// Only the first marked element in document order is honoured per frame.
+// Intent: docs/intent/kit-runtime/ (KIT-RUNTIME-SCROLL-020..026).
+// ---------------------------------------------------------------------------
+
+// @spec KIT-RUNTIME-SCROLL-023
+function _kitScrollIntoViewOptedOut() {
+  var root = document.documentElement;
+  return !!(root && root.getAttribute && root.getAttribute('data-kit-scroll-into-view') === 'off');
+}
+
+// @spec KIT-RUNTIME-SCROLL-022
+function _kitScrollMargin(el) {
+  var own = el.getAttribute ? el.getAttribute('data-kit-scroll-margin') : null;
+  if (own !== null && own !== undefined && own !== '') { return parseFloat(own) || 0; }
+  var root = document.documentElement;
+  var rootMargin = (root && root.getAttribute) ? root.getAttribute('data-kit-scroll-margin') : null;
+  if (rootMargin !== null && rootMargin !== undefined && rootMargin !== '') { return parseFloat(rootMargin) || 0; }
+  return 0;
+}
+
+/**
+ * kitScrollIntoViewDecide — the whole rule, as a pure function: is `rect`
+ * (an element's `getBoundingClientRect()`) fully inside `viewport` ({height}),
+ * given an optional top `margin` in px?
+ *
+ * Returns true when the element is NOT fully visible (a scroll is needed),
+ * false when it is already fully visible.
+ *
+ * @spec KIT-RUNTIME-SCROLL-026
+ */
+function kitScrollIntoViewDecide(rect, viewport, margin) {
+  if (!rect || !viewport) { return false; }
+  var m = margin || 0;
+  if (rect.top < m) { return true; }
+  if (rect.bottom > viewport.height) { return true; }
+  return false;
+}
+
+// @spec KIT-RUNTIME-SCROLL-020, KIT-RUNTIME-SCROLL-021, KIT-RUNTIME-SCROLL-024
+function _kitRestoreScrollIntoView() {
+  if (typeof document === 'undefined' || !document.querySelectorAll) { return; }
+  if (_kitScrollIntoViewOptedOut()) { return; }
+  var els = document.querySelectorAll('[data-kit-scroll-into-view]');
+  if (!els || !els.length) { return; }
+  var el = els[0];                      // first in document order, only one honoured
+  if (!el || !el.getBoundingClientRect || !el.scrollIntoView) { return; }
+  var rect = el.getBoundingClientRect();
+  var viewport = { height: (typeof window !== 'undefined' && window.innerHeight) ? window.innerHeight : 0 };
+  var margin = _kitScrollMargin(el);
+  if (kitScrollIntoViewDecide(rect, viewport, margin)) {
+    el.scrollIntoView({ block: 'nearest' });
+  }
 }
 
 /**

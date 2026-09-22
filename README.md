@@ -41,6 +41,10 @@ A server push is a whole new frame, so when it grows content *above* the viewpor
 
 Intent and specs: `docs/intent/kit-runtime/` (`KIT-RUNTIME-SCROLL-001`…`012`).
 
+Scroll keeping only anchors a *click*. A cursor the server itself moves — a j/k row-move — has no gesture to anchor to, because the user never touched the row that moved. For that, mark the row with `data-kit-scroll-into-view=""`; on the same animation frame, if it is not fully inside the viewport, the runtime calls `scrollIntoView({block: 'nearest'})` on it — instant, not smooth, like vim. Fully visible, nothing happens. An optional `data-kit-scroll-margin="<px>"` on the element or on `<html>` narrows the top of the viewport for this check, for a page with a sticky header. Only the first marked element in document order is honoured, and when both features have a correction to make in the same frame, scroll-into-view runs last and wins — the user asked for the cursor. Opt out with `data-kit-scroll-into-view="off"` on `<html>` (independent of `data-kit-keep-scroll`).
+
+Intent and specs: `docs/intent/kit-runtime/` (`KIT-RUNTIME-SCROLL-020`…`026`).
+
 ### Browser-owned keyboard chords
 
 Keep route and action maps in the consuming application; share only the state machine:

@@ -31,3 +31,15 @@ Design: `kit-runtime-design.md`. "The kit runtime" is the script `resources/publ
 - [x] **KIT-RUNTIME-SCROLL-010**: When the gesture element is opted out at restore time, the kit runtime shall forget the gesture and shall not scroll.
 - [x] **KIT-RUNTIME-SCROLL-011**: When the DOM changes and no gesture is remembered, the kit runtime shall not scroll.
 - [x] **KIT-RUNTIME-SCROLL-012**: The kit runtime shall decide between scrolling, forgetting, and doing nothing in one pure function, `kitKeepScrollDecide`, of the recorded gesture, the current time, the element's current top, the last user-scroll time, the opt-out state, and whether the element was found, so the decision is exercisable without a browser.
+
+## Scroll into view
+
+"The marked element" is the first element in document order, at restore time, carrying a `data-kit-scroll-into-view` attribute. "The viewport" is `{height: window.innerHeight}`.
+
+- [x] **KIT-RUNTIME-SCROLL-020**: On the same animation frame scroll keeping uses (`KIT-RUNTIME-SCROLL-004`), when the marked element exists and is not fully inside the viewport, the kit runtime shall call `el.scrollIntoView({block: 'nearest'})` on it exactly once for that frame.
+- [x] **KIT-RUNTIME-SCROLL-021**: When the marked element exists and is fully inside the viewport, the kit runtime shall not call `scrollIntoView`.
+- [x] **KIT-RUNTIME-SCROLL-022**: When the marked element or `document.documentElement` carries `data-kit-scroll-margin="<px>"`, the kit runtime shall treat that many pixels below the viewport's top edge as off-screen for that element, preferring a value on the element itself over one on `<html>`, and shall treat the margin as `0` when neither carries it.
+- [x] **KIT-RUNTIME-SCROLL-023**: When `document.documentElement` carries `data-kit-scroll-into-view="off"`, the kit runtime shall not look for a marked element and shall not call `scrollIntoView`. This opt-out is independent of `data-kit-keep-scroll`.
+- [x] **KIT-RUNTIME-SCROLL-024**: When more than one element on the page carries `data-kit-scroll-into-view`, the kit runtime shall consider only the first in document order.
+- [x] **KIT-RUNTIME-SCROLL-025**: On a frame where both gesture-anchored scroll keeping and scroll-into-view have a correction to make, the kit runtime shall apply the scroll-into-view correction after the scroll-keep correction, so it is the one that determines the final scroll position.
+- [x] **KIT-RUNTIME-SCROLL-026**: The kit runtime shall decide whether the marked element is off-screen in one pure function, `kitScrollIntoViewDecide(rect, viewport, margin)`, of the element's current `getBoundingClientRect()`, the viewport, and the margin, so the decision is exercisable without a browser.

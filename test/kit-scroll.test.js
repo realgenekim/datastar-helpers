@@ -1,7 +1,7 @@
 'use strict';
 
-// Gesture-anchored scroll keeping in the kit runtime.
-// @spec KIT-RUNTIME-SCROLL-001 .. KIT-RUNTIME-SCROLL-012
+// Gesture-anchored scroll keeping, and scroll-into-view, in the kit runtime.
+// @spec KIT-RUNTIME-SCROLL-001 .. KIT-RUNTIME-SCROLL-012, KIT-RUNTIME-SCROLL-020 .. 026
 //
 // There is no jsdom in this repo (and no network install), so this file follows
 // the harness datastar-kit.test.js already uses: run the authored source in a
@@ -31,14 +31,16 @@ function makeEl(tag, opts) {
     isContentEditable: !!opts.contentEditable,
     attrs: opts.attrs || {},
     top: opts.top === undefined ? 0 : opts.top,
+    bottom: opts.bottom === undefined ? (opts.top === undefined ? 0 : opts.top) : opts.bottom,
     rects: 0,
     getAttribute(name) {
       return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
     },
     getBoundingClientRect() {
       this.rects++;
-      return { top: this.top, left: 0, bottom: this.top, right: 0, width: 0, height: 0 };
-    }
+      return { top: this.top, left: 0, bottom: this.bottom, right: 0, width: 0, height: 0 };
+    },
+    scrollIntoView() {}
   };
   return el;
 }
@@ -50,6 +52,9 @@ function install(opts) {
   const observers = [];          // MutationObserver instances
   const frames = [];             // queued requestAnimationFrame callbacks
   const scrolls = [];            // window.scrollBy calls
+  const order = [];              // elements created via api.el/api.button/api.mark, in document order
+  const scrollIntoViews = [];    // {id, opts} from el.scrollIntoView() calls
+  const timeline = [];           // {type:'scrollBy'|'scrollIntoView', ...}, in call order
   let clock = 1000;
 
   const documentElement = makeEl('HTML', { attrs: opts.htmlAttrs || {} });
@@ -62,6 +67,13 @@ function install(opts) {
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     getElementById(id) {
       return Object.prototype.hasOwnProperty.call(byId, id) ? byId[id] : null;
+    },
+    // Only the one shape the runtime uses: '[attr-name]'.
+    querySelectorAll(selector) {
+      const m = /^\[([a-zA-Z0-9-]+)\]$/.exec(selector);
+      if (!m) { return []; }
+      const attr = m[1];
+      return order.filter((el) => el.attrs && Object.prototype.hasOwnProperty.call(el.attrs, attr));
     }
   };
 
@@ -83,8 +95,9 @@ function install(opts) {
   };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
+  sandbox.innerHeight = opts.innerHeight === undefined ? 800 : opts.innerHeight;
   if (opts.noScrollBy !== true) {
-    sandbox.scrollBy = function (x, y) { scrolls.push({ x, y }); };
+    sandbox.scrollBy = function (x, y) { scrolls.push({ x, y }); timeline.push({ type: 'scrollBy', x, y }); };
   }
   if (opts.noMutationObserver) { delete sandbox.MutationObserver; }
   if (opts.noRaf) { delete sandbox.requestAnimationFrame; }
@@ -93,11 +106,37 @@ function install(opts) {
 
   const api = {
     sandbox, scrolls, frames, byId, document, body, documentElement, observers,
+    order, scrollIntoViews, timeline,
     now() { return clock; },
     advance(ms) { clock += ms; },
     register(el) { if (el.id) byId[el.id] = el; return el; },
     fire(type, event) {
       (listeners[type] || []).forEach((fn) => fn(event));
+    },
+    // Any element, tracked in document order and wired for querySelectorAll
+    // and scrollIntoView. `button()` and `mark()` both go through this.
+    el(tag, o) {
+      o = o || {};
+      const created = makeEl(tag, Object.assign({ parent: body }, o));
+      created.scrollIntoView = function (svOpts) {
+        // svOpts is an object literal built by code running IN the vm context
+        // (`el.scrollIntoView({block: 'nearest'})` inside datastar-kit.js), so
+        // it carries that realm's Object.prototype -- deepStrictEqual counts
+        // that as a mismatch on its own. Copy into this realm before recording,
+        // same fix the pure-decide test below already needs for vm objects.
+        const plainOpts = svOpts ? Object.assign({}, svOpts) : svOpts;
+        scrollIntoViews.push({ id: created.id, opts: plainOpts });
+        timeline.push({ type: 'scrollIntoView', id: created.id, opts: plainOpts });
+      };
+      order.push(created);
+      if (created.id) { byId[created.id] = created; }
+      return created;
+    },
+    // An element carrying data-kit-scroll-into-view="", the cursor row.
+    mark(id, top, o) {
+      o = o || {};
+      const attrs = Object.assign({ 'data-kit-scroll-into-view': '' }, o.attrs || {});
+      return api.el('DIV', Object.assign({}, o, { id, top, attrs }));
     },
     // One server push: notify the observer, then run the animation frame(s).
     morph(times) {
@@ -117,8 +156,7 @@ function install(opts) {
     },
     // A button inside body that the user clicks.
     button(id, top) {
-      const el = makeEl('BUTTON', { id, top, parent: body });
-      return api.register(el);
+      return api.el('BUTTON', { id, top });
     },
     click(el) {
       document.activeElement = el;
@@ -506,4 +544,112 @@ test('kitKeepScrollDecide is a pure function of the situation', () => {
 
   // staleness and the user's own scroll outrank a missing element
   assert.deepEqual(at({ now: 3001, found: false }), { action: 'forget', reason: 'expired' });
+});
+
+// ===========================================================================
+// Scroll into view — the cursor row
+// @spec KIT-RUNTIME-SCROLL-020 .. KIT-RUNTIME-SCROLL-026
+// ===========================================================================
+
+// @spec KIT-RUNTIME-SCROLL-020
+test('an element below the fold is scrolled into view once, with {block: nearest}', () => {
+  const t = install();
+  t.mark('cursor', 900, { bottom: 940 });   // below the 800px viewport
+  t.morph();
+  assert.deepEqual(t.scrollIntoViews, [{ id: 'cursor', opts: { block: 'nearest' } }]);
+});
+
+// @spec KIT-RUNTIME-SCROLL-021
+test('a fully visible marked element is left alone', () => {
+  const t = install();
+  t.mark('cursor', 100, { bottom: 150 });
+  t.morph();
+  assert.deepEqual(t.scrollIntoViews, []);
+});
+
+// @spec KIT-RUNTIME-SCROLL-022
+test('data-kit-scroll-margin on the element counts a top-margin row as off-screen', () => {
+  const t = install();
+  t.mark('cursor', 50, { bottom: 90, attrs: { 'data-kit-scroll-margin': '80' } });
+  t.morph();
+  assert.deepEqual(t.scrollIntoViews, [{ id: 'cursor', opts: { block: 'nearest' } }]);
+});
+
+// @spec KIT-RUNTIME-SCROLL-022
+test('data-kit-scroll-margin on <html> applies when the element carries none of its own', () => {
+  const t = install({ htmlAttrs: { 'data-kit-scroll-margin': '80' } });
+  t.mark('cursor', 50, { bottom: 90 });
+  t.morph();
+  assert.deepEqual(t.scrollIntoViews, [{ id: 'cursor', opts: { block: 'nearest' } }]);
+});
+
+// @spec KIT-RUNTIME-SCROLL-022
+test('without a margin, the same top-50 row is already fully visible', () => {
+  const t = install();
+  t.mark('cursor', 50, { bottom: 90 });
+  t.morph();
+  assert.deepEqual(t.scrollIntoViews, []);
+});
+
+// @spec KIT-RUNTIME-SCROLL-023
+test('data-kit-scroll-into-view="off" on <html> suppresses the whole feature', () => {
+  const t = install({ htmlAttrs: { 'data-kit-scroll-into-view': 'off' } });
+  t.mark('cursor', 900, { bottom: 940 });
+  t.morph();
+  assert.deepEqual(t.scrollIntoViews, []);
+});
+
+// @spec KIT-RUNTIME-SCROLL-024
+test('two marked elements: only the first in document order is honoured', () => {
+  const t = install();
+  t.mark('first', 900, { bottom: 940 });
+  t.mark('second', 950, { bottom: 990 });
+  t.morph();
+  assert.deepEqual(t.scrollIntoViews, [{ id: 'first', opts: { block: 'nearest' } }]);
+});
+
+// @spec KIT-RUNTIME-SCROLL-020
+test('no marked element on the page: nothing happens', () => {
+  const t = install();
+  t.morph();
+  assert.deepEqual(t.scrollIntoViews, []);
+});
+
+// @spec KIT-RUNTIME-SCROLL-025
+test('scroll-into-view runs after scroll-keep\'s correction in the same frame, and wins', () => {
+  const t = install();
+  const row = t.button('row-7', 500);
+  t.click(row);
+  t.sandbox.postJSON('/act', {});
+  t.mark('cursor', 900, { bottom: 940 });
+
+  row.top = 760;               // scroll-keep has a correction to make this frame too
+  t.morph();
+
+  assert.deepEqual(t.timeline, [
+    { type: 'scrollBy', x: 0, y: 260 },
+    { type: 'scrollIntoView', id: 'cursor', opts: { block: 'nearest' } }
+  ]);
+});
+
+// @spec KIT-RUNTIME-SCROLL-026
+test('kitScrollIntoViewDecide is a pure function of the rect, viewport, and margin', () => {
+  const { sandbox } = install();
+  const decide = sandbox.kitScrollIntoViewDecide;
+
+  // fully visible
+  assert.equal(decide({ top: 100, bottom: 150 }, { height: 800 }, 0), false);
+  // exactly flush with both edges still counts as visible
+  assert.equal(decide({ top: 0, bottom: 800 }, { height: 800 }, 0), false);
+  // below the fold
+  assert.equal(decide({ top: 850, bottom: 900 }, { height: 800 }, 0), true);
+  // above the top
+  assert.equal(decide({ top: -50, bottom: 100 }, { height: 800 }, 0), true);
+  // inside the margin counts as off-screen
+  assert.equal(decide({ top: 50, bottom: 90 }, { height: 800 }, 80), true);
+  // clear of the margin
+  assert.equal(decide({ top: 90, bottom: 130 }, { height: 800 }, 80), false);
+  // no rect or no viewport: refuse to claim off-screen
+  assert.equal(decide(null, { height: 800 }, 0), false);
+  assert.equal(decide({ top: 900, bottom: 950 }, null, 0), false);
 });

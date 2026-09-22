@@ -40,6 +40,17 @@ Scroll position is browser-owned state the server cannot see, so keeping it is o
 - **Where the decision lives.** `kitKeepScrollDecide(input)` is pure: it takes the recorded gesture, the current time, the element's current top, the last user-scroll time, the opt-out state, and whether the element was found, and returns `{action: 'scroll', by}`, `{action: 'forget', reason}`, or `{action: 'none', reason}`. The DOM half only reads and applies. Iterating on the rule therefore costs no browser.
 - **When it does not install.** A browser missing `MutationObserver`, `requestAnimationFrame`, `document.addEventListener`, or `window.scrollBy` gets no scroll keeping and no error; `postJSON` records nothing in that case, so the feature is one switch.
 
+## Scroll into view
+
+Scroll keeping holds a *clicked* element in place; it says nothing about a cursor the server itself moves — a j/k row-move that lands somewhere off-screen has no gesture to anchor to, because the user never touched the row that moved. The server marks that row instead: one element per page carries `data-kit-scroll-into-view=""`, and on the same animation frame scroll keeping already uses, the runtime checks whether that element is fully inside the viewport and, if not, calls `el.scrollIntoView({block: 'nearest'})` — instant, not smooth, matching how vim itself repositions the view. A fully visible element gets no call, so there is no jitter on frames that don't need one.
+
+- **What is marked.** The first element in document order carrying the attribute; a second one on the same page is ignored, so the server names one cursor, not a set.
+- **The viewport check.** `{top, bottom} = el.getBoundingClientRect()` against `{height: window.innerHeight}`, narrowed at the top by an optional `data-kit-scroll-margin="<px>"` on the element itself or on `<html>` (the element wins if both are present) — a page with a sticky header sets it to the header's height, so a row tucked just under the header still counts as needing a scroll.
+- **Where the decision lives.** `kitScrollIntoViewDecide(rect, viewport, margin)` is pure, mirroring `kitKeepScrollDecide`: it takes the element's rect, the viewport, and the margin, and returns whether the element is off-screen. The DOM half only reads and applies.
+- **Composing with scroll keeping.** Both corrections run in the same `requestAnimationFrame` callback, scroll keeping first. When a frame has both a clicked row sliding down *and* a server-moved cursor off-screen, scroll-into-view runs last and its `scrollIntoView` call is what the browser ends the frame on — the user asked for the cursor, so it wins.
+- **Opting out.** `data-kit-scroll-into-view="off"` on `<html>` suppresses the whole feature. It is a separate switch from `data-kit-keep-scroll`: the two features protect different things (a click vs. a server-moved cursor) and a page may want one without the other.
+- **Failure mode.** It shares scroll keeping's install gate — a browser without `MutationObserver`/`requestAnimationFrame` gets neither feature, and no error either way.
+
 ## Decisions & Alternatives
 
 | Decision | Chosen | Alternatives Considered | Rationale |
@@ -51,6 +62,8 @@ Scroll position is browser-owned state the server cannot see, so keeping it is o
 | What is anchored | The element the gesture came from | The scroll offset; the first element in the viewport; a caller-named anchor id | An offset is meaningless once content above it grows. The first visible element is not what the user is watching; the thing they just clicked is, and it needs no page cooperation. |
 | How long the anchor lives | 2000 ms from the gesture | Until the next gesture; forever | A correction the user cannot connect to their own click reads as the page fighting them. Two seconds covers a server round trip and the pushes that follow it. |
 | Default | On, with `data-kit-keep-scroll="off"` to opt out | Off, with an opt-in attribute | The jump is a defect on every page that pushes frames; a fix that each page must remember to switch on is a fix most pages will not get. |
+| How the server names the cursor for scroll-into-view | One `data-kit-scroll-into-view=""` attribute, first match wins | A signal the runtime reads; a dedicated SSE event | An attribute is a fact about a rendered element, the same shape the kit already uses for opt-outs, and needs no new wire format — the server just renders it on the row it wants seen. |
+| Whether scroll-into-view shares scroll keeping's opt-out | No — its own `data-kit-scroll-into-view="off"` | Reuse `data-kit-keep-scroll="off"` | The two features protect different things (a click the user made vs. a cursor the server moved); a page may legitimately want the server-driven one without the click-anchored one, or vice versa. |
 
 ## Open Questions & Future Decisions
 
