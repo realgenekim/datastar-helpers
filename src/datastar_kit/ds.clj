@@ -12,6 +12,7 @@
    - Server actions: post-action*, click-action, fetch-then-reload, fetch-swap
    - Binding: bind, signal-ref (one kebab-case name, both spellings)
    - Browser-owned text: editable (the one open input inside a pushed region)
+   - Choosing one value: picker (server-owned selection; fence in datastar-kit.picker)
    - URL: replace-url (server-owned location bar via the replaceUrl plugin)
    - Clipboard: copy-nearest-text, copy-text, copy-text-js
    - Focus/scroll: js-focus-element, js-scroll-into-view
@@ -381,6 +382,174 @@
             [[:button {:type "button"
                        :onclick (editable-gesture (editable-cancel-js cancel command-id))}
               (or (:label cancel) "cancel")]])))])
+
+;; ---------------------------------------------------------------------------
+;; picker — choose ONE value from a server-owned list, with ONE owner for it
+;; ---------------------------------------------------------------------------
+
+(defn- js-str
+  "A Clojure string as a single-quoted JS string literal, escaped so a quote,
+   a backslash or a line break in server data cannot end the literal early.
+   (`js-val` quotes without escaping; picker values are data, not code.)"
+  [s]
+  (str "'"
+       (-> (str s)
+           (str/replace "\\" "\\\\")
+           (str/replace "'" "\\'")
+           (str/replace "\n" "\\n")
+           (str/replace "\r" "\\r")
+           (str/replace " " "\\u2028")
+           (str/replace " " "\\u2029"))
+       "'"))
+
+(def ^:private picker-seq-js
+  "The ordering fence: read `data-kit-seq` off this picker's filter wrapper, add
+   one, write it back, return it. The wrapper is the one element a push never
+   replaces (it carries data-star-ignore-morph), so the counter survives every
+   push for the life of the edit session. It is NOT application state -- it
+   carries no value, only the order the user acted in -- and the server uses it
+   to refuse what arrives out of order (datastar-kit.picker)."
+  (->JsExpr (str "(function(w){var s=(parseInt(w.dataset.kitSeq,10)||0)+1;"
+                 "w.dataset.kitSeq=String(s);return s})"
+                 "(this.closest('.ds-picker').querySelector('.ds-picker-filter'))")))
+
+(defn- picker-post
+  "One picker gesture's postJSON call: `body` plus the next seq and, when there
+   is one, the session's command id."
+  [url body command-id]
+  (post-action* url (cond-> (assoc body :seq picker-seq-js)
+                      command-id (assoc :command-id command-id))))
+
+(defn- picker-click-js
+  "Keyboard shortcut -> the CURRENT button. The filter's handlers are frozen by
+   ignore-morph at first render and cannot know today's selection; the buttons
+   render outside the island and are always current, so Enter/Escape click
+   them instead of re-deriving what they would post."
+  [cls]
+  (str "{var b=this.closest('.ds-picker').querySelector('." cls "');"
+       "if(b&&!b.disabled)b.click()}"))
+
+(defn- picker-keydown-js
+  [{:keys [move-url cancel]} command-id]
+  (str "event.stopPropagation();"
+       "if(event.key==='ArrowDown'){event.preventDefault();"
+       (picker-post move-url {:dir "down"} command-id) "}"
+       "if(event.key==='ArrowUp'){event.preventDefault();"
+       (picker-post move-url {:dir "up"} command-id) "}"
+       "if(event.key==='Enter'){event.preventDefault();"
+       (picker-click-js "ds-picker-submit") "}"
+       (when cancel
+         (str "if(event.key==='Escape'){event.preventDefault();"
+              (picker-click-js "ds-picker-cancel") "}"))))
+
+(defn picker
+  "Hiccup for a picker: a filter box, the server's matches, and submit/cancel.
+   The chosen value has ONE owner -- the server. The box is a filter, never a
+   value, and the submit carries no value at all.
+
+   Options
+     :filter-url   POST {q, seq, command-id} on every keystroke in the filter
+     :pick-url     POST {value, seq, command-id} on a click on an item (and on
+                   Enter on a focused item: items are buttons)
+     :move-url     POST {dir, seq, command-id} on ArrowDown/ArrowUp in the filter
+     :submit       {:label :url :payload} -- POSTs the literal :payload plus
+                   seq and command-id, and NOTHING else: never the box text,
+                   never a value. The server commits its own selection.
+     :cancel       {:label :url} -- optional; POSTs {command-id}
+     :command-id   the server-minted edit-session id
+     :placeholder  the filter's placeholder; :autofocus? (default true)
+     :items        [{:value :label} ...] -- the server's current matches
+     :selected     the server's selection (a :value), or nil
+     :message      feedback, rendered beside the buttons
+     :seq          the last seq the server APPLIED for this session (default 0).
+                   The counter starts here, so a page reloaded mid-session
+                   continues the server's order instead of restarting below it
+                   and having every gesture fenced out.
+     :class        extra class on the root
+
+   Why this shape (the bug it makes unrepresentable)
+     The first picker we shipped prefilled the box with the current value,
+     posted the box text on submit, and let \"text that names a value\" beat the
+     server's selection. A click on the list moved the selection and never the
+     box, and the prefill always named a value -- so a click could never win.
+     Two owners, one reconciler, one bug. Here the box opens EMPTY, only the
+     server's selection is ever committed, and the submit's body has no field a
+     reconciler could read.
+
+   What survives a push, and what is re-rendered
+     Only the filter wrapper (`.ds-picker-filter`) carries
+     `data-star-ignore-morph`: the caret and the half-typed filter survive. The
+     item list, the highlight, the submit's `disabled` (true exactly when
+     :selected is nil) and :message render OUTSIDE it, so every push updates
+     them. The wrapper's id is keyed by :command-id, so a new session never
+     inherits an old session's frozen input.
+
+   The ordering fence (`data-kit-seq`)
+     The one piece of client state. Every gesture increments an integer on the
+     filter wrapper and posts it as `seq`; the server applies a filter, pick or
+     move only when `datastar-kit.picker/picker-accept?` (later than the last
+     applied) and a submit only when `picker-caught-up?` (exactly the next one),
+     so a late filter response cannot undo a later pick and a submit cannot
+     overtake a pick still in flight.
+
+   Keys in the filter: ArrowDown/ArrowUp move, Enter clicks submit when it is
+   enabled, Escape clicks cancel; every keystroke stops propagating so a page
+   keymap never sees typing. Every handler is a plain onclick/oninput/onkeydown
+   that calls event.stopPropagation(); every button is type=\"button\".
+   Intent and specs: docs/intent/picker/."
+  [{:keys [filter-url pick-url move-url submit cancel command-id placeholder
+           items selected message class autofocus? seq]
+    :or {autofocus? true}
+    :as opts}]
+  (doseq [[k v] [[:filter-url filter-url] [:pick-url pick-url] [:move-url move-url]
+                 [:submit-url (:url submit)]]]
+    (assert (and (string? v) (not (str/blank? v)))
+            (str "picker needs a non-blank " k)))
+  (assert (or (nil? cancel) (and (string? (:url cancel)) (not (str/blank? (:url cancel)))))
+          "picker :cancel needs a :url")
+  (let [gesture (fn [js] (str js ";event.stopPropagation();return false"))]
+    [:div (cond-> {:class (str/join " " (remove nil? ["ds-picker" class]))
+                   :onclick "event.stopPropagation()"})
+     ;; NOTE: `.ds-picker` and `.ds-picker-filter` are read by picker-seq-js and
+     ;; picker-click-js -- the classes are a contract, not decoration.
+     [:div (cond-> {:class "ds-picker-filter"
+                    :data-star-ignore-morph ""
+                    :data-kit-seq (str (or seq 0))}
+             command-id (assoc :id (str "ds-picker-" command-id)))
+      [:input (cond-> {:type "text"
+                       :class "ds-picker-input"
+                       :autocomplete "off"
+                       :oninput (str (picker-post filter-url {:q (->JsExpr "this.value")} command-id)
+                                     ";event.stopPropagation()")
+                       :onkeydown (picker-keydown-js opts command-id)}
+                placeholder (assoc :placeholder placeholder)
+                autofocus? (assoc :autofocus true))]]
+     (into [:ul {:class "ds-picker-items"}]
+           (for [{:keys [value label]} items
+                 :let [sel? (= value selected)]]
+             [:li
+              [:button (cond-> {:type "button"
+                                :class (if sel? "ds-picker-item ds-picker-selected" "ds-picker-item")
+                                :onclick (gesture (picker-post pick-url {:value (->JsExpr (js-str value))}
+                                                               command-id))}
+                         sel? (assoc :aria-selected "true"))
+               (str (or label value))]]))
+     (into [:div {:class "ds-picker-actions"}
+            [:button (cond-> {:type "button"
+                              :class "ds-picker-submit"
+                              :onclick (gesture (picker-post (:url submit) (or (:payload submit) {})
+                                                             command-id))}
+                       (nil? selected) (assoc :disabled true))
+             (or (:label submit) "submit")]]
+           (concat
+            (when cancel
+              [[:button {:type "button"
+                         :class "ds-picker-cancel"
+                         :onclick (gesture (post-action* (:url cancel)
+                                                         (cond-> {} command-id (assoc :command-id command-id))))}
+                (or (:label cancel) "cancel")]])
+            (when-not (str/blank? (str (or message "")))
+              [[:span {:class "ds-picker-message"} (str message)]])))]))
 
 (defn replace-url
   "Hiccup attribute map for data-star-replace-url (Datastar's replaceUrl plugin).

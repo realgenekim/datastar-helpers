@@ -23,7 +23,8 @@ The server owns all state. The DOM is a display terminal. The client fires a POS
 
 | File | Namespace / asset | What it gives you |
 |---|---|---|
-| `src/datastar_kit/ds.clj` | `datastar-kit.ds` | Signal helpers, safe persistent mounts (`sse-mount-url`), continuous one-shot controls (`live-scrub`), the one browser-owned text input (`editable`), keydown builders, `bind`/`signal-ref`, `post-action*`, clipboard/scroll helpers, and **spec-validated SSE event constructors**. |
+| `src/datastar_kit/ds.clj` | `datastar-kit.ds` | Signal helpers, safe persistent mounts (`sse-mount-url`), continuous one-shot controls (`live-scrub`), the one browser-owned text input (`editable`), the single-owner `picker`, keydown builders, `bind`/`signal-ref`, `post-action*`, clipboard/scroll helpers, and **spec-validated SSE event constructors**. |
+| `src/datastar_kit/picker.clj` | `datastar-kit.picker` | The server half of `ds/picker`: the pure ordering fence (`picker-accept?`, `picker-caught-up?`, `parse-seq`) and `step` for ↑/↓. |
 | `src/datastar_kit/sse.clj` | `datastar-kit.sse` | **Reliable SSE broadcast (raw-channel flavor)** for apps that write raw SSE strings: subscriber set, off-thread push agent, heartbeat, dead-connection reaping. |
 | `src/datastar_kit/sse_sdk.clj` | `datastar-kit.sse-sdk` | **Same reliability, SDK flavor** — for apps using the Datastar Clojure SDK (`hk/->sse-response` + a `sse-gen` + `patch-elements!`): off-thread broadcast or targeted `push!`/`push-to!`, idempotent heartbeat, reaping, and an `sse-response` helper with a per-connection `on-connect` hook. |
 | `src/datastar_kit/assets.clj` | `datastar-kit.assets` | Ordered Hiccup script tags with app-supplied cache-busting; embeds the Basic-Auth bootstrap and the keyboard chord engine so apps copy neither, and emits the bootstrap first. Also embeds and serves the vendored Datastar client and the kit runtime itself (`wrap-kit-assets`, `asset-path`), so apps don't need their own copies of those either. `(copy-audit)` catches a stale or shadowed app copy of any of these. |
@@ -123,6 +124,22 @@ These are the things you'll otherwise rediscover the hard way. The library exist
   **Open by rendering it; close by rendering nothing.** The wrapper carries `data-star-ignore-morph` — the aliased spelling the pinned client actually reads — so a later push of the surrounding region skips the subtree and leaves the caret and the half-typed draft alone. Stop rendering it and the surrounding morph removes it. There is no freeze logic to get wrong.
 
   **The draft is not a signal.** Every gesture reads its sibling input at click time (`this.closest('.ds-editable').querySelector('input').value`), which removes the camelCase mismatch as a class. The `text` key is fixed; `:payload` values are the **server's**, rendered as literals — never `evt`/cursor state, because the click can land after focus has moved and the gesture would act on the wrong row. Every button is a plain `type="button"` `onclick` (one event idiom: `event` and `this`, never Datastar's `evt`), each stopping propagation, and so does the wrapper itself. Enter submits the first action; Escape cancels; the input's keydown stops propagation so a page-level `keydown__window` map doesn't also see the typing. Intent and specs: `docs/intent/editable/`.
+- **A picker has ONE owner for the chosen value — use `ds/picker`, don't compose it from `editable`.** The first picker we shipped prefilled its filter box with the current value, posted the box text on submit, and let "text that names a value" beat the server's selection. A click on the list moved the selection and never the box, and the prefill always named a value — so a click on the list could never win. Two owners (box text in the browser, selection on the server) need a reconciler, and the reconciler was the bug.
+
+  ```clojure
+  (ds/picker {:filter-url "/r/1/reassign/scrub"   ; POST {q, seq, command-id} per keystroke
+              :pick-url   "/r/1/reassign/pick"    ; POST {value, seq, command-id} on a click
+              :move-url   "/r/1/reassign/move"    ; POST {dir, seq, command-id} on ArrowUp/Down
+              :submit     {:label "reassign" :url "/r/1/reassign/submit" :payload {:tx-id "t1"}}
+              :cancel     {:label "cancel" :url "/r/1/reassign/cancel"}
+              :command-id "evt-7"
+              :placeholder "type to filter…"
+              :items      [{:value "Hosting & Internet"} {:value "Office Expenses"}]
+              :selected   "Office Expenses"          ; the server's selection, or nil
+              :message    nil})                      ; feedback, rendered beside the buttons
+  ```
+
+  The filter opens **empty** (it is a filter, never a value) inside the one `data-star-ignore-morph` island. The list, the highlight, the submit's `disabled` (exactly when `:selected` is nil) and `:message` render outside it, so pushes update them. **The submit posts the literal payload, `command-id` and `seq` — never the box text, never a value**; the server commits its own selection. Enter clicks the (current) submit button, Escape clicks cancel, ↑/↓ post a move. The one piece of client state is `data-kit-seq`, an integer on the island stamped on every gesture as `seq`: the server applies a filter/pick/move only when `(datastar-kit.picker/picker-accept? last-seq seq)` and a submit only when `(picker-caught-up? last-seq seq)`, so a late filter response cannot undo a later pick and a submit cannot overtake a pick still in flight. Intent and specs: `docs/intent/picker/`.
 - **Name signals in kebab-case and derive both spellings.** The HTML parser lowercases attribute names, so `data-star-bind:noteText` binds `notetext` while `$noteText` reads an always-empty signal, with no error anywhere. `(ds/bind :note-text)` emits the attribute and `(ds/signal-ref :note-text)` returns `"$noteText"` (Datastar's own camelCase rule) — one name, both spellings, neither hand-typed. `bind` and `signal-ref` now **refuse** an uppercase letter (`ex-info`, `:type :ds/camel-case-signal`) rather than letting the mismatch reach the browser.
 - **Gesture endpoints need command replay, not blanket idempotence.** A fire-and-forget client can always turn one click into two POSTs — a bubbled click, a double tap, a retry after a dropped response. "Every endpoint must be idempotent" is the wrong rule: move-down and undo are legitimately repeatable. The rule that holds is **a replay of one command has one effect; a new command carries a new id** — hence `editable`'s `:command-id`. Prove it from the outside:
 

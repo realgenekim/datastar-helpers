@@ -70,6 +70,7 @@ Intent components:
 | `kit-runtime` | The browser globals that `ds`-generated expressions call (`postJSON`, `showNotification`), and the rule that nothing else lives in that file. |
 | `basic-auth-bootstrap` | Making browser URL APIs (Request, fetch, History) work on a page opened from a URL with embedded Basic-Auth credentials, and delivering that script first on the page. |
 | `editable` | The one place the browser owns state: the open text input inside a server-pushed region, its gestures, and the command-replay contract the endpoints behind it must meet. |
+| `picker` | Choosing ONE value from a server-owned list: an empty filter (never a value), a server-owned selection, a submit that carries identity and order but no value, and the `data-kit-seq` ordering fence (`datastar-kit.picker`) that stops a late response undoing a later gesture. |
 | `ds` | Signal helpers, persistent mounts, continuous controls, keydown builders, SSE event constructors. *(design not yet written)* |
 | `sse`, `sse-sdk` | Reliable broadcast and targeted push. *(design not yet written)* |
 | `assets` | Script-tag ordering. *(design not yet written; URL selection is specified in `kit-assets`)* |
